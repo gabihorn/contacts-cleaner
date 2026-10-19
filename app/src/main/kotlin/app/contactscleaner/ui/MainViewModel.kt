@@ -11,6 +11,7 @@ import app.contactscleaner.core.ContactAnalyzer
 import app.contactscleaner.core.Issue
 import app.contactscleaner.core.PhoneFormat
 import app.contactscleaner.core.PhoneNormalizer
+import app.contactscleaner.data.Action
 import app.contactscleaner.data.Backup
 import app.contactscleaner.data.ChangeLog
 import app.contactscleaner.data.ChangeRun
@@ -111,17 +112,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun dismissMessage() = _state.update { it.copy(message = null) }
 
-    fun apply(category: Category) = work("מתקן…") { applyNow(category) }
+    fun apply(category: Category, action: Action) =
+        work(if (action == Action.FIX) "מתקן…" else "מוחק…") { applyNow(category, action) }
 
-    private suspend fun applyNow(category: Category) {
+    private suspend fun applyNow(category: Category, action: Action) {
         val s = _state.value
         val chosen = s.issuesIn(category).filter { it.id in s.selected }
         val normalizer = normalizer
         val run = withContext(Dispatchers.IO) {
-            ContactsWriter(resolver, normalizer).apply(category.title, chosen, s.inputs)
+            val title = if (action == Action.FIX) category.title else "${category.title}: מחיקה"
+            ContactsWriter(resolver, normalizer).apply(title, chosen, s.inputs, action)
                 ?.also(changeLog::add)
         }
-        _state.update { it.copy(message = if (run == null) "לא היה מה לתקן" else "בוצעו ${run.lines.size} תיקונים") }
+        _state.update { it.copy(message = if (run == null) "לא היה מה לתקן" else "בוצעו ${run.lines.size} שינויים") }
         reloadLog()
         rescan()
     }
@@ -137,12 +140,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Backs up to [target], then applies [thenApply] if given and the backup worked. */
-    fun backup(target: Uri, thenApply: Category? = null) = work("מגבה אנשי קשר…") {
+    fun backup(target: Uri, thenApply: Pair<Category, Action>? = null) = work("מגבה אנשי קשר…") {
         val count = withContext(Dispatchers.IO) { Backup(resolver).exportTo(target) }
         _state.update { it.copy(message = "גובו $count אנשי קשר") }
         if (thenApply != null) {
-            _state.update { it.copy(busy = "מתקן…") }
-            applyNow(thenApply)
+            _state.update { it.copy(busy = "מבצע…") }
+            applyNow(thenApply.first, thenApply.second)
         }
     }
 
@@ -171,7 +174,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             is Issue.PhoneFormat, is Issue.RepeatedEntries, is Issue.NameCleanup -> true
             is Issue.MissingName -> it.suggested != null
             is Issue.MissingAreaCode -> it.guess != null
-            is Issue.EmptyContact, is Issue.InvalidPhone -> false
+            is Issue.EmptyContact, is Issue.InvalidPhone, is Issue.OutdatedPhone -> false
         }
     }.map { it.id }.toSet()
 

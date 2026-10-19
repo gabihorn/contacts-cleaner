@@ -6,17 +6,20 @@ import app.contactscleaner.core.Issue
 enum class Category(
     val title: String,
     val description: String,
-    /** False for categories shown only for review, with nothing to apply. */
+    /** False for categories with no fix to apply (only, maybe, deleting). */
     val fixable: Boolean = true,
+    /** True where each item is a phone number the user may delete instead of fixing. */
+    val deletesNumbers: Boolean = false,
 ) {
     DUPLICATES("אנשי קשר כפולים", "אותו אדם שמור יותר מפעם אחת. כל המידע יאוחד לאיש קשר אחד בחשבון גוגל, והעותקים יימחקו. אפשר לבטל מיומן השינויים."),
-    PHONE_FORMAT("קידומת ופורמט", "מספרים שיעברו לפורמט בינלאומי אחיד, למשל 050-1234567 ← ‎+972501234567"),
-    MISSING_AREA_CODE("טלפון קווי בלי קידומת", "מספרים של 7 ספרות בלי קידומת אזור. בחר לכל מספר את הקידומת הנכונה."),
+    PHONE_FORMAT("קידומת ופורמט", "מספרים שיעברו לפורמט בינלאומי אחיד, למשל 050-1234567 ← ‎+972501234567", deletesNumbers = true),
+    MISSING_AREA_CODE("טלפון קווי בלי קידומת", "מספרים של 7 ספרות בלי קידומת אזור. בחר לכל מספר את הקידומת הנכונה, או מחק את המספרים.", deletesNumbers = true),
     REPEATED("מספר שמור פעמיים", "אותו מספר או מייל מופיע כמה פעמים באותו איש קשר. העותקים המיותרים יימחקו."),
     MISSING_NAME("חסר שם", "אנשי קשר בלי שם, או שהשם הוא בעצם מספר. אפשר להקליד שם."),
     NAME_CLEANUP("סידור שמות", "נקודות ופסיקים מיותרים בתחילת השם או בסופו, רווחים כפולים, ושמות באנגלית בלי אותיות גדולות במקום."),
     EMPTY("אנשי קשר ריקים", "בלי מספר ובלי מייל. סימון ותיקון ימחקו אותם. אפשר לבטל מיומן השינויים."),
-    INVALID("מספרים לא תקינים", "מספרים שלא נראים תקינים. כדאי לבדוק ידנית.", fixable = false),
+    OUTDATED("מספרים ישנים / לא פעילים", "מספרים בפורמט שכבר לא קיים (6 ספרות אחרי הקידומת), או בטווח שאף חברה לא קיבלה. כנראה לא יענו.", fixable = false, deletesNumbers = true),
+    INVALID("מספרים לא תקינים", "מספרים שלא נראים תקינים. כדאי לבדוק ידנית או למחוק.", fixable = false, deletesNumbers = true),
     ;
 
     companion object {
@@ -28,6 +31,7 @@ enum class Category(
             is Issue.MissingName -> MISSING_NAME
             is Issue.NameCleanup -> NAME_CLEANUP
             is Issue.EmptyContact -> EMPTY
+            is Issue.OutdatedPhone -> OUTDATED
             is Issue.InvalidPhone -> INVALID
         }
     }

@@ -23,36 +23,36 @@ class ContactAnalyzerTest {
 
     @Test
     fun `local number gets an international fix`() {
-        val c = contact("משה כהן", phones = listOf("050-1234567"))
+        val c = contact("משה כהן", phones = listOf("052-8123456"))
         val issue = analyzer.analyze(listOf(c)).ofType<Issue.PhoneFormat>().single()
-        assertEquals("+972501234567", issue.suggested)
+        assertEquals("+972528123456", issue.suggested)
     }
 
     @Test
     fun `already canonical number is not reported`() {
-        val c = contact("משה כהן", phones = listOf("+972501234567"))
+        val c = contact("משה כהן", phones = listOf("+972528123456"))
         assertTrue(analyzer.analyze(listOf(c)).issues.isEmpty())
     }
 
     @Test
     fun `same number twice on one contact keeps the canonical copy`() {
-        val c = contact("משה כהן", phones = listOf("050-1234567", "+972501234567"))
+        val c = contact("משה כהן", phones = listOf("052-8123456", "+972528123456"))
         val report = analyzer.analyze(listOf(c))
         val repeat = report.ofType<Issue.RepeatedEntries>().single()
-        assertEquals(listOf("050-1234567"), repeat.repeatedPhones.map { it.number })
+        assertEquals(listOf("052-8123456"), repeat.repeatedPhones.map { it.number })
         // The copy being removed isn't also offered a format fix.
         assertTrue(report.ofType<Issue.PhoneFormat>().isEmpty())
     }
 
     @Test
     fun `contacts sharing a number are duplicates`() {
-        val a = contact("משה כהן", phones = listOf("0501234567"))
-        val b = contact("משה", phones = listOf("+972 50-123-4567"), emails = listOf("moshe@example.com"))
+        val a = contact("משה כהן", phones = listOf("0528123456"))
+        val b = contact("משה", phones = listOf("+972 52-812-3456"), emails = listOf("moshe@example.com"))
         val dup = analyzer.analyze(listOf(a, b)).ofType<Issue.Duplicates>().single()
         assertEquals(setOf(DuplicateReason.SAME_PHONE), dup.reasons)
         assertTrue(dup.confident)
         assertEquals("משה כהן", dup.merged.name)
-        assertEquals(listOf("+972501234567"), dup.merged.phones)
+        assertEquals(listOf("+972528123456"), dup.merged.phones)
         assertEquals(listOf("moshe@example.com"), dup.merged.emails)
     }
 
@@ -66,8 +66,8 @@ class ContactAnalyzerTest {
 
     @Test
     fun `name match ignores word order and niqqud`() {
-        val a = contact("משה כהן", phones = listOf("0501111111"))
-        val b = contact("כֹּהֵן מֹשֶׁה", phones = listOf("0502222222"))
+        val a = contact("משה כהן", phones = listOf("0528111111"))
+        val b = contact("כֹּהֵן מֹשֶׁה", phones = listOf("0528222222"))
         val dup = analyzer.analyze(listOf(a, b)).ofType<Issue.Duplicates>().single()
         assertEquals(setOf(DuplicateReason.SAME_NAME), dup.reasons)
         assertFalse(dup.confident)
@@ -76,8 +76,8 @@ class ContactAnalyzerTest {
 
     @Test
     fun `duplicates chain through different links into one group`() {
-        val a = contact("Moshe Cohen", phones = listOf("0501234567"))
-        val b = contact("Moshe", phones = listOf("0501234567"), emails = listOf("m@example.com"))
+        val a = contact("Moshe Cohen", phones = listOf("0528123456"))
+        val b = contact("Moshe", phones = listOf("0528123456"), emails = listOf("m@example.com"))
         val c = contact(null, emails = listOf("M@example.com"))
         val dup = analyzer.analyze(listOf(a, b, c)).ofType<Issue.Duplicates>().single()
         assertEquals(3, dup.contacts.size)
@@ -86,14 +86,14 @@ class ContactAnalyzerTest {
 
     @Test
     fun `number saved as the name counts as missing name, with email guess`() {
-        val c = contact("0501234567", phones = listOf("+972501234567"), emails = listOf("david.levi@gmail.com"))
+        val c = contact("0528123456", phones = listOf("+972528123456"), emails = listOf("david.levi@gmail.com"))
         val issue = analyzer.analyze(listOf(c)).ofType<Issue.MissingName>().single()
         assertEquals("David Levi", issue.suggested)
     }
 
     @Test
     fun `missing name without email has no guess`() {
-        val c = contact(null, phones = listOf("+972501234567"))
+        val c = contact(null, phones = listOf("+972528123456"))
         assertNull(analyzer.analyze(listOf(c)).ofType<Issue.MissingName>().single().suggested)
     }
 
@@ -125,7 +125,7 @@ class ContactAnalyzerTest {
 
     @Test
     fun `leading dot is reported as a name fix`() {
-        val c = contact(".משה כהן", phones = listOf("+972501234567"))
+        val c = contact(".משה כהן", phones = listOf("+972528123456"))
         assertEquals("משה כהן", analyzer.analyze(listOf(c)).ofType<Issue.NameCleanup>().single().suggested)
     }
 

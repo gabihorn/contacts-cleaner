@@ -31,7 +31,16 @@ sealed interface Issue {
         }
     }
 
-    /** A number that isn't valid anywhere. Shown for review; there is no automatic fix. */
+    /** A number that is most likely out of service; the only fix is deleting it. */
+    data class OutdatedPhone(
+        val contact: Contact,
+        val phone: PhoneEntry,
+        val reason: OutdatedReason,
+    ) : Issue {
+        override val id get() = "outdated:${phone.dataId}"
+    }
+
+    /** A number that isn't valid anywhere. There is no fix but deleting it. */
     data class InvalidPhone(
         val contact: Contact,
         val phone: PhoneEntry,

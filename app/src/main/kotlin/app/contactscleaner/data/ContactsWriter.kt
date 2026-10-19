@@ -15,9 +15,18 @@ import app.contactscleaner.core.DataRow
 import app.contactscleaner.core.Issue
 import app.contactscleaner.core.MergePlanner
 import app.contactscleaner.core.MimeTypes
+import app.contactscleaner.core.PhoneEntry
 import app.contactscleaner.core.PhoneNormalizer
 import app.contactscleaner.core.PhoneResult
 import app.contactscleaner.core.RawContact
+
+/** What to do with the chosen issues. */
+enum class Action {
+    FIX,
+
+    /** Delete the phone number each issue is about, instead of fixing it. */
+    DELETE_NUMBERS,
+}
 
 /** Writes the fixes the user approved back to the address book, and undoes them. */
 class ContactsWriter(
@@ -31,7 +40,7 @@ class ContactsWriter(
      * picked, keyed by issue id: the name for [Issue.MissingName], the area
      * code for [Issue.MissingAreaCode].
      */
-    fun apply(title: String, issues: List<Issue>, inputs: Map<String, String>): ChangeRun? {
+    fun apply(title: String, issues: List<Issue>, inputs: Map<String, String>, action: Action = Action.FIX): ChangeRun? {
         // Snapshot everything we may touch before touching anything.
         val before = repository.loadRaw(issues.flatMap { touchedContacts(it) }.flatMap { it.rawContactIds })
         val rawById = before.associateBy { it.id }
@@ -42,6 +51,12 @@ class ContactsWriter(
         for (issue in issues) {
             val opsBefore = ops.size
             var line: String? = null
+            if (action == Action.DELETE_NUMBERS) {
+                val phone = phoneOf(issue) ?: continue
+                ops += deleteData(phone.dataId)
+                lines += "${issue.contactOrNull()?.title}: נמחק ${ltr(phone.number)}"
+                continue
+            }
             when (issue) {
                 is Issue.PhoneFormat -> {
                     ops += updatePhone(issue.phone.dataId, issue.suggested)
@@ -82,7 +97,8 @@ class ContactsWriter(
                         line = "אוחדו: ${issue.contacts.joinToString(" + ") { it.title }}"
                     }
                 }
-                is Issue.InvalidPhone -> Unit // Nothing to apply; shown for review only.
+                // Nothing to fix; these can only be deleted (Action.DELETE_NUMBERS).
+                is Issue.OutdatedPhone, is Issue.InvalidPhone -> Unit
             }
             if (ops.size > opsBefore && line != null) lines += line
         }
@@ -146,7 +162,19 @@ class ContactsWriter(
         is Issue.NameCleanup -> listOf(issue.contact)
         is Issue.MissingName -> listOf(issue.contact)
         is Issue.EmptyContact -> listOf(issue.contact)
-        is Issue.InvalidPhone -> emptyList()
+        is Issue.OutdatedPhone -> listOf(issue.contact)
+        is Issue.InvalidPhone -> listOf(issue.contact)
+    }
+
+    private fun Issue.contactOrNull(): Contact? = touchedContacts(this).singleOrNull()
+
+    /** The phone number an issue is about, for issues that are about one. */
+    private fun phoneOf(issue: Issue): PhoneEntry? = when (issue) {
+        is Issue.PhoneFormat -> issue.phone
+        is Issue.MissingAreaCode -> issue.phone
+        is Issue.OutdatedPhone -> issue.phone
+        is Issue.InvalidPhone -> issue.phone
+        else -> null
     }
 
     /**

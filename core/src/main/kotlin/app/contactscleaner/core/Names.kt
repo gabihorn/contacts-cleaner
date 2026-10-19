@@ -11,7 +11,11 @@ object Names {
      */
     fun matchKey(name: String?): String? {
         if (name.isNullOrBlank()) return null
-        val tokens = niqqud.replace(name, "")
+        // "הרב משה כהן" and "משה כהן" are the same person.
+        val withoutTitles = spaces.split(normalizeTitles(spaces.replace(name.trim(), " ")))
+            .filterNot { it in canonicalTitles }
+            .joinToString(" ")
+        val tokens = niqqud.replace(withoutTitles, "")
             .lowercase()
             .split(nonWord)
             .filter { it.isNotEmpty() }
@@ -30,8 +34,8 @@ object Names {
 
     /**
      * A tidier spelling of [name], or null if it is already fine: removes
-     * stray punctuation at the start and end, trims and collapses spaces, and
-     * fixes all-lowercase / ALL-CAPS Latin names.
+     * stray punctuation at the start and end, trims and collapses spaces,
+     * spells titles one way, and fixes all-lowercase / ALL-CAPS Latin names.
      */
     fun cleanup(name: String?): String? {
         if (name.isNullOrBlank()) return null
@@ -46,7 +50,74 @@ object Names {
                 word.lowercase().replaceFirstChar { it.uppercaseChar() }
             }
         }
+        fixed = normalizeTitles(fixed)
         return fixed.takeIf { it != name }
+    }
+
+    /**
+     * Each title's spellings (compared after [titleKey]) and the one form they
+     * all become. Hebrew and English stay in their own language.
+     */
+    private val leadingTitles: Map<String, String> = buildMap {
+        fun title(canonical: String, vararg variants: String) = variants.forEach { put(titleKey(it), canonical) }
+        title("הרב", "הרב", "הר'", "הר", "רב")
+        title("Rabbi", "rabbi", "rav", "rab")
+        title("ר'", "ר'", "ר")
+        title("ד\"ר", "ד\"ר", "ד'ר", "דר'", "דר", "דוקטור")
+        title("Dr.", "dr", "doctor")
+        title("פרופ'", "פרופ'", "פרופ", "פרופסור")
+        title("Prof.", "prof", "professor")
+        title("גב'", "גב'", "גב", "גברת")
+        title("עו\"ד", "עו\"ד", "עו'ד", "עוה\"ד", "עורך דין", "עורכת דין")
+        title("רו\"ח", "רו\"ח", "רו'ח", "רואה חשבון", "רואת חשבון")
+    }
+
+    /** Professional titles that also come after the name ("משה כהן עו\"ד"). */
+    private val trailingTitles = setOf("עו\"ד", "רו\"ח")
+
+    private val canonicalTitles = leadingTitles.values.toSet()
+
+    /** Hebrew geresh/gershayim and curly quotes as plain ' and ", no trailing dot, lowercase. */
+    private fun titleKey(token: String) = token
+        .replace('״', '"').replace('”', '"').replace('“', '"')
+        .replace('׳', '\'').replace('’', '\'').replace('‘', '\'')
+        .trimEnd('.')
+        .lowercase()
+
+    /**
+     * Spells titles one way: "ר.", "ר׳" and "ר" become "ר'", "דוקטור" and
+     * "דר'" become "ד\"ר", "עורך דין" becomes "עו\"ד" and so on. Only up to two
+     * titles at the start (and a professional one at the end) are touched, and
+     * never the only word, so a person named "רב" keeps their name.
+     */
+    fun normalizeTitles(name: String): String {
+        val tokens = name.split(' ').toMutableList()
+
+        fun canonicalAt(i: Int, words: Int, allowed: Collection<String>? = null): String? {
+            if (i < 0 || i + words > tokens.size) return null
+            val canonical = leadingTitles[titleKey(tokens.subList(i, i + words).joinToString(" "))] ?: return null
+            return canonical.takeIf { allowed == null || it in allowed }
+        }
+        fun replace(i: Int, words: Int, canonical: String) {
+            repeat(words - 1) { tokens.removeAt(i + 1) }
+            tokens[i] = canonical
+        }
+
+        var i = 0
+        while (i < 2) {
+            // Leave at least one word that isn't a title.
+            val two = canonicalAt(i, 2)?.takeIf { tokens.size - i > 2 }
+            val one = canonicalAt(i, 1)?.takeIf { tokens.size - i > 1 }
+            when {
+                two != null -> replace(i, 2, two)
+                one != null -> replace(i, 1, one)
+                else -> break
+            }
+            i++
+        }
+        if (tokens.size - i >= 3) canonicalAt(tokens.size - 2, 2, trailingTitles)?.let { replace(tokens.size - 2, 2, it) }
+        if (tokens.size - i >= 2) canonicalAt(tokens.size - 1, 1, trailingTitles)?.let { replace(tokens.size - 1, 1, it) }
+        return tokens.joinToString(" ")
     }
 
     /** True if the "name" is really just a phone number or an email address. */

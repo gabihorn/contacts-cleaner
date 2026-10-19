@@ -22,6 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
@@ -56,7 +57,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.contactscleaner.core.Contact
 import app.contactscleaner.core.DuplicateReason
 import app.contactscleaner.core.Issue
+import app.contactscleaner.core.OutdatedReason
 import app.contactscleaner.core.PhoneFormat
+import app.contactscleaner.data.Action
 import app.contactscleaner.data.ChangeRun
 import java.time.Instant
 import java.time.LocalDate
@@ -218,8 +221,8 @@ private fun HomeScreen(state: UiState, vm: MainViewModel) {
                         Text("${issues.size}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     }
                     Text(category.description, style = MaterialTheme.typography.bodySmall)
-                    if (category.fixable) {
-                        Text("$chosen מסומנים לתיקון", style = MaterialTheme.typography.labelMedium)
+                    if (category.fixable || category.deletesNumbers) {
+                        Text("$chosen מסומנים", style = MaterialTheme.typography.labelMedium)
                     }
                 }
             }
@@ -231,12 +234,15 @@ private fun HomeScreen(state: UiState, vm: MainViewModel) {
 private fun CategoryScreen(category: Category, state: UiState, vm: MainViewModel) {
     val issues = state.issuesIn(category)
     val chosen = issues.count { it.id in state.selected }
-    var confirming by remember { mutableStateOf(false) }
-    val backupThenApply = rememberBackupLauncher { vm.backup(it, thenApply = category) }
+    val selectable = category.fixable || category.deletesNumbers
+    var confirming by remember { mutableStateOf<Action?>(null) }
+    // Which action the backup-then-apply flow continues with once a file is picked.
+    var afterBackup by remember { mutableStateOf(Action.FIX) }
+    val backupThenApply = rememberBackupLauncher { vm.backup(it, thenApply = category to afterBackup) }
 
     Column(Modifier.fillMaxSize()) {
         Text(category.description, Modifier.padding(16.dp), style = MaterialTheme.typography.bodyMedium)
-        if (category.fixable) {
+        if (selectable) {
             Row(Modifier.padding(horizontal = 8.dp)) {
                 TextButton(onClick = { vm.setAll(category, true) }) { Text("סמן הכל") }
                 TextButton(onClick = { vm.setAll(category, false) }) { Text("נקה סימון") }
@@ -249,40 +255,61 @@ private fun CategoryScreen(category: Category, state: UiState, vm: MainViewModel
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             items(issues, key = { it.id }) { issue ->
-                IssueCard(issue, state, vm, selectable = category.fixable)
+                IssueCard(issue, state, vm, selectable = selectable)
             }
         }
-        if (category.fixable) {
+        if (selectable) {
             Surface(tonalElevation = 3.dp) {
-                Button(
-                    onClick = { confirming = true },
-                    enabled = chosen > 0 && state.busy == null,
-                    modifier = Modifier.fillMaxWidth().padding(16.dp).navigationBarsPadding(),
-                ) { Text("תיקון $chosen מסומנים") }
+                Row(
+                    Modifier.fillMaxWidth().padding(16.dp).navigationBarsPadding(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    val enabled = chosen > 0 && state.busy == null
+                    if (category.fixable) {
+                        Button(
+                            onClick = { confirming = Action.FIX },
+                            enabled = enabled,
+                            modifier = Modifier.weight(1f),
+                        ) { Text("תיקון $chosen") }
+                    }
+                    if (category.deletesNumbers) {
+                        OutlinedButton(
+                            onClick = { confirming = Action.DELETE_NUMBERS },
+                            enabled = enabled,
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                        ) { Text("מחיקת $chosen מספרים") }
+                    }
+                }
             }
         }
     }
 
-    if (confirming) {
+    confirming?.let { action ->
+        val fix = action == Action.FIX
         AlertDialog(
-            onDismissRequest = { confirming = false },
-            title = { Text("לבצע $chosen תיקונים?") },
+            onDismissRequest = { confirming = null },
+            title = { Text(if (fix) "לבצע $chosen תיקונים?" else "למחוק $chosen מספרים?") },
             text = {
-                Text("השינויים ייכתבו לאנשי הקשר ויסונכרנו לחשבון גוגל. אפשר לבטל אותם מיומן השינויים, ובכל זאת מומלץ לשמור גם גיבוי.")
+                Text(
+                    (if (fix) "השינויים ייכתבו לאנשי הקשר" else "המספרים יימחקו מאנשי הקשר") +
+                        " ויסונכרנו לחשבון גוגל. אפשר לבטל מיומן השינויים, ובכל זאת מומלץ לשמור גם גיבוי."
+                )
             },
             confirmButton = {
                 Button(onClick = {
-                    confirming = false
+                    confirming = null
+                    afterBackup = action
                     backupThenApply.launch(backupFileName())
-                }) { Text("גיבוי ותיקון") }
+                }) { Text(if (fix) "גיבוי ותיקון" else "גיבוי ומחיקה") }
             },
             dismissButton = {
                 Row {
-                    TextButton(onClick = { confirming = false }) { Text("ביטול") }
+                    TextButton(onClick = { confirming = null }) { Text("ביטול") }
                     TextButton(onClick = {
-                        confirming = false
-                        vm.apply(category)
-                    }) { Text("תיקון בלי גיבוי") }
+                        confirming = null
+                        vm.apply(category, action)
+                    }) { Text("בלי גיבוי") }
                 }
             },
         )
@@ -336,6 +363,18 @@ private fun IssueBody(issue: Issue, state: UiState, vm: MainViewModel) {
             } else {
                 vm.preview(issue, area)?.let { Text("אחרי: ${ltr(it)}", fontWeight = FontWeight.Medium) }
             }
+        }
+        is Issue.OutdatedPhone -> {
+            Title(issue.contact.title)
+            Text(ltr(issue.phone.number))
+            Text(
+                when (issue.reason) {
+                    OutdatedReason.OLD_MOBILE -> "סלולרי בפורמט ישן (6 ספרות אחרי הקידומת)"
+                    OutdatedReason.OLD_LANDLINE -> "קווי בפורמט ישן (6 ספרות אחרי הקידומת)"
+                    OutdatedReason.UNALLOCATED -> "בטווח מספרים שלא חולק לאף חברה"
+                },
+                style = small,
+            )
         }
         is Issue.InvalidPhone -> {
             Title(issue.contact.title)

@@ -39,14 +39,16 @@ class ContactAnalyzer(
         for (phone in contact.phones) {
             if (phone in repeatedPhones) continue
             when (val r = normalizer.normalize(phone.number)) {
-                is PhoneResult.Valid -> if (r.formatted != phone.number) {
-                    issues += Issue.PhoneFormat(contact, phone, r.formatted)
+                is PhoneResult.Valid -> {
+                    if (r.formatted != phone.number) issues += Issue.PhoneFormat(contact, phone, r.formatted)
+                    if (!r.allocated) issues += Issue.OutdatedPhone(contact, phone, OutdatedReason.UNALLOCATED)
                 }
                 is PhoneResult.Invalid -> issues += if (normalizer.lacksIsraeliAreaCode(phone.number)) {
                     val ownAreaCode = contact.phones.firstNotNullOfOrNull { normalizer.israeliAreaCode(it.number) }
                     Issue.MissingAreaCode(contact, phone, ownAreaCode ?: commonAreaCode)
                 } else {
-                    Issue.InvalidPhone(contact, phone)
+                    normalizer.outdatedReason(phone.number)?.let { Issue.OutdatedPhone(contact, phone, it) }
+                        ?: Issue.InvalidPhone(contact, phone)
                 }
                 is PhoneResult.Special -> Unit
             }
