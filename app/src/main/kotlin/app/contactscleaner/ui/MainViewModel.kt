@@ -132,6 +132,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         s.copy(selected = s.selected + s.issuesIn(Category.NAME_TAG).filter { tag in (it as Issue.NameTag).tags }.map { it.id })
     }
 
+    /** Ticks every name whose tag is of [family] (see [tagFamily]). */
+    fun selectTagFamily(family: String) = _state.update { s ->
+        s.copy(
+            selected = s.selected + s.issuesIn(Category.NAME_TAG)
+                .filter { issue -> (issue as Issue.NameTag).tags.any { tagFamily(it) == family } }
+                .map { it.id }
+        )
+    }
+
     /** Ticks only the duplicates that are safe to merge without a second look. */
     fun selectConfidentDuplicates() = _state.update { s ->
         val all = s.issuesIn(Category.DUPLICATES)

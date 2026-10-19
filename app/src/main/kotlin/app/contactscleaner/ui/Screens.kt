@@ -6,6 +6,9 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -295,36 +298,32 @@ private fun CategoryScreen(category: Category, state: UiState, vm: MainViewModel
     val backupThenApply = rememberBackupLauncher { vm.backup(it, thenApply = category to afterBackup) }
     val exportList = rememberCsvLauncher { vm.exportCsv(it, contactsOf(issues)) }
 
+    // Everything above the action buttons scrolls, so however many filters
+    // and tag buttons there are, the buttons stay on screen.
     Column(Modifier.fillMaxSize()) {
-        Text(category.description, Modifier.padding(16.dp), style = MaterialTheme.typography.bodyMedium)
-        if (category == Category.INACTIVE) InactiveFilterPanel(state, vm)
-        if (selectable) {
-            FlowRow(Modifier.padding(horizontal = 8.dp)) {
-                TextButton(onClick = { vm.setAll(category, true) }) { Text("סמן הכל") }
-                TextButton(onClick = { vm.setAll(category, false) }) { Text("נקה סימון") }
-                if (category == Category.DUPLICATES) {
-                    TextButton(onClick = vm::selectConfidentDuplicates) { Text("סמן רק ודאיים") }
-                }
-                if (category == Category.NAME_TAG) {
-                    // One button per tag, most common first: "סמן ס005 (312)".
-                    issues.flatMap { (it as Issue.NameTag).tags }
-                        .groupingBy { it }.eachCount()
-                        .entries.sortedByDescending { it.value }
-                        .forEach { (tag, count) ->
-                            TextButton(onClick = { vm.selectTag(tag) }) { Text("סמן ${ltr(tag)} ($count)") }
-                        }
-                }
-                TextButton(onClick = { exportList.launch(csvFileName()) }) { Text("ייצוא הרשימה") }
-            }
-        }
-        HorizontalDivider()
         LazyColumn(
             Modifier.weight(1f),
-            contentPadding = PaddingValues(12.dp),
+            contentPadding = PaddingValues(bottom = 12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            item { Text(category.description, Modifier.padding(16.dp), style = MaterialTheme.typography.bodyMedium) }
+            if (category == Category.INACTIVE) item { InactiveFilterPanel(state, vm) }
+            if (category == Category.NAME_TAG) item { TagButtons(issues, vm) }
+            if (selectable) item {
+                FlowRow(Modifier.padding(horizontal = 8.dp)) {
+                    TextButton(onClick = { vm.setAll(category, true) }) { Text("סמן הכל") }
+                    TextButton(onClick = { vm.setAll(category, false) }) { Text("נקה סימון") }
+                    if (category == Category.DUPLICATES) {
+                        TextButton(onClick = vm::selectConfidentDuplicates) { Text("סמן רק ודאיים") }
+                    }
+                    TextButton(onClick = { exportList.launch(csvFileName()) }) { Text("ייצוא הרשימה") }
+                }
+            }
+            item { HorizontalDivider() }
             items(issues, key = { it.id }) { issue ->
-                IssueCard(issue, state, vm, selectable = selectable)
+                Box(Modifier.padding(horizontal = 12.dp)) {
+                    IssueCard(issue, state, vm, selectable = selectable)
+                }
             }
         }
         if (selectable) {
@@ -470,6 +469,46 @@ private fun InactiveFilterPanel(state: UiState, vm: MainViewModel) {
 }
 
 private val DATE = DateTimeFormatter.ofPattern("dd/MM/yyyy")
+
+/**
+ * Quick selection for "fixed tags in names". Tags of one family ("ס001",
+ * "ס002"…, i.e. the same letters with a number) get a single button; the
+ * individual tags sit in one row that scrolls sideways.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun TagButtons(issues: List<Issue>, vm: MainViewModel) {
+    val counts = issues.flatMap { (it as Issue.NameTag).tags }.groupingBy { it }.eachCount()
+    val families = counts.entries
+        .groupBy({ tagFamily(it.key) }, { it })
+        .filterValues { it.size > 1 }
+        .mapValues { (_, tags) -> tags.sumOf { it.value } }
+        .entries.sortedByDescending { it.value }
+
+    Column(Modifier.padding(horizontal = 8.dp)) {
+        if (families.isNotEmpty()) {
+            Text("סימון לפי סוג תוספת", Modifier.padding(horizontal = 8.dp), style = MaterialTheme.typography.labelLarge)
+            FlowRow {
+                families.forEach { (family, count) ->
+                    TextButton(onClick = { vm.selectTagFamily(family) }) {
+                        Text("סמן את כל ${ltr(familyLabel(family))} ($count)")
+                    }
+                }
+            }
+        }
+        Text("סימון לפי תוספת בודדת", Modifier.padding(horizontal = 8.dp), style = MaterialTheme.typography.labelLarge)
+        Row(Modifier.horizontalScroll(rememberScrollState())) {
+            counts.entries.sortedByDescending { it.value }.forEach { (tag, count) ->
+                TextButton(onClick = { vm.selectTag(tag) }) { Text("${ltr(tag)} ($count)") }
+            }
+        }
+    }
+}
+
+/** "ס005" -> "ס#", "AB12" -> "AB#", "Tz" -> "Tz": tags that differ only in their number are one family. */
+fun tagFamily(tag: String) = tag.replace(Regex("\\d+"), "#")
+
+private fun familyLabel(family: String) = family.replace("#", "+מספר")
 
 @Composable
 private fun IssueCard(issue: Issue, state: UiState, vm: MainViewModel, selectable: Boolean) {
