@@ -42,6 +42,20 @@ sealed interface Issue {
     }
 
     /**
+     * A name carrying a tag that many other names share ("ס005 מרים כהן",
+     * "Tz +972…"). [suggested] is the name without it; empty when nothing
+     * but a number is left.
+     */
+    data class NameTag(
+        val contact: Contact,
+        val name: NameEntry,
+        val tags: List<String>,
+        val suggested: String,
+    ) : Issue {
+        override val id get() = "tag:${name.dataId}"
+    }
+
+    /**
      * A name that doesn't look like a person's. [suggested] is a replacement
      * when there's an obvious one (emoji removed, or the name from ME).
      */

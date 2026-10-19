@@ -106,6 +106,13 @@ class ContactsWriter(
                         .build()
                     line = "${issue.contact.title}: ${ltr(issue.phone.number)} ← ${typeName(issue.suggestedType)}"
                 }
+                is Issue.NameTag -> {
+                    val name = (inputs[issue.id] ?: issue.suggested).trim()
+                    if (name.isNotEmpty() && name != issue.name.displayName) {
+                        ops += updateName(issue.name.dataId, name)
+                        line = "\"${issue.name.displayName}\" ← \"$name\""
+                    }
+                }
                 is Issue.SuspiciousName -> {
                     val name = (inputs[issue.id] ?: issue.suggested)?.trim().orEmpty()
                     if (name.isNotEmpty() && name != issue.name.displayName) {
@@ -223,6 +230,7 @@ class ContactsWriter(
         is Issue.EmptyContact -> listOf(issue.contact)
         is Issue.PhoneLabel -> listOf(issue.contact)
         is Issue.SuspiciousName -> listOf(issue.contact)
+        is Issue.NameTag -> listOf(issue.contact)
         is Issue.Inactive -> listOf(issue.contact)
         is Issue.OutdatedPhone -> listOf(issue.contact)
         is Issue.InvalidPhone -> listOf(issue.contact)

@@ -15,8 +15,9 @@ class ContactAnalyzer(
             .mapNotNull { normalizer.israeliAreaCode(it.number) }
             .groupingBy { it }.eachCount()
             .maxByOrNull { it.value }?.key
+        val tags = Affixes.find(contacts.mapNotNull { it.displayName }).keys
         for (contact in contacts) {
-            issues += perContactIssues(contact, commonAreaCode)
+            issues += perContactIssues(contact, commonAreaCode, tags)
         }
         issues += findDuplicates(contacts)
         if (withActivity) {
@@ -25,7 +26,7 @@ class ContactAnalyzer(
         return AnalysisReport(contacts.size, issues)
     }
 
-    private fun perContactIssues(contact: Contact, commonAreaCode: String?): List<Issue> {
+    private fun perContactIssues(contact: Contact, commonAreaCode: String?, tags: Set<String>): List<Issue> {
         val issues = mutableListOf<Issue>()
 
         // Repeated phones: keep the copy already in canonical form if there is one.
@@ -69,6 +70,13 @@ class ContactAnalyzer(
         if (displayName == null || Names.looksLikePhoneOrEmail(displayName)) {
             val guess = contact.emails.firstNotNullOfOrNull { Names.fromEmail(it.address) }
             issues += Issue.MissingName(contact, guess)
+        } else if (name != null && Affixes.tagsIn(displayName, tags).isNotEmpty()) {
+            // The tag's own fix also tidies the rest of the name, so it stands alone.
+            val stripped = Affixes.strip(displayName, tags)
+            issues += Issue.NameTag(
+                contact, name, Affixes.tagsIn(displayName, tags),
+                suggested = stripped.takeUnless { it.isEmpty() || Names.looksLikePhoneOrEmail(it) }.orEmpty(),
+            )
         } else if (name != null) {
             val problem = Names.suspiciousReason(displayName)
             if (problem != null) {

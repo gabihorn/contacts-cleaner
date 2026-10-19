@@ -127,6 +127,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(message = "יוצאו $count אנשי קשר") }
     }
 
+    /** Ticks every name carrying [tag], on top of what's already ticked. */
+    fun selectTag(tag: String) = _state.update { s ->
+        s.copy(selected = s.selected + s.issuesIn(Category.NAME_TAG).filter { tag in (it as Issue.NameTag).tags }.map { it.id })
+    }
+
     /** Ticks only the duplicates that are safe to merge without a second look. */
     fun selectConfidentDuplicates() = _state.update { s ->
         val all = s.issuesIn(Category.DUPLICATES)
@@ -277,7 +282,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             is Issue.MissingAreaCode -> it.guess != null
             is Issue.PhoneLabel -> true
             is Issue.EmptyContact, is Issue.InvalidPhone, is Issue.OutdatedPhone, is Issue.Inactive,
-            is Issue.SuspiciousName -> false
+            is Issue.SuspiciousName, is Issue.NameTag -> false
         }
     }.map { it.id }.toSet()
 
@@ -287,6 +292,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             is Issue.EmptyContact -> issue.contact
             is Issue.Inactive -> issue.contact
             is Issue.SuspiciousName -> issue.contact
+            is Issue.NameTag -> issue.contact
             else -> null
         }
 

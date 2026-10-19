@@ -162,6 +162,7 @@ private fun contactsOf(issues: List<Issue>): List<Contact> = issues.flatMap { is
         is Issue.RepeatedEntries -> listOf(issue.contact)
         is Issue.MissingName -> listOf(issue.contact)
         is Issue.SuspiciousName -> listOf(issue.contact)
+        is Issue.NameTag -> listOf(issue.contact)
         is Issue.NameCleanup -> listOf(issue.contact)
         is Issue.EmptyContact -> listOf(issue.contact)
         is Issue.Inactive -> listOf(issue.contact)
@@ -303,6 +304,15 @@ private fun CategoryScreen(category: Category, state: UiState, vm: MainViewModel
                 TextButton(onClick = { vm.setAll(category, false) }) { Text("נקה סימון") }
                 if (category == Category.DUPLICATES) {
                     TextButton(onClick = vm::selectConfidentDuplicates) { Text("סמן רק ודאיים") }
+                }
+                if (category == Category.NAME_TAG) {
+                    // One button per tag, most common first: "סמן ס005 (312)".
+                    issues.flatMap { (it as Issue.NameTag).tags }
+                        .groupingBy { it }.eachCount()
+                        .entries.sortedByDescending { it.value }
+                        .forEach { (tag, count) ->
+                            TextButton(onClick = { vm.selectTag(tag) }) { Text("סמן ${ltr(tag)} ($count)") }
+                        }
                 }
                 TextButton(onClick = { exportList.launch(csvFileName()) }) { Text("ייצוא הרשימה") }
             }
@@ -537,6 +547,21 @@ private fun IssueBody(issue: Issue, state: UiState, vm: MainViewModel) {
                 (if (issue.line == LineType.MOBILE) "מספר נייד" else "מספר קווי") +
                     " שמסומן \"${typeLabel(issue.phone.type)}\". יסומן \"${typeLabel(issue.suggestedType)}\".",
                 fontWeight = FontWeight.Medium,
+            )
+        }
+        is Issue.NameTag -> {
+            ContactDetails(issue.contact)
+            Text(
+                "תוספת: " + issue.tags.joinToString(", ") { ltr(it) },
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            OutlinedTextField(
+                value = state.inputs[issue.id] ?: issue.suggested,
+                onValueChange = { vm.setInput(issue.id, it) },
+                label = { Text(if (issue.suggested.isEmpty()) "בלי התוספת נשאר רק מספר. הקלד שם, או העבר לארכיון" else "שם בלי התוספת") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
             )
         }
         is Issue.SuspiciousName -> {

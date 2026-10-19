@@ -21,6 +21,12 @@ enum class Category(
     PHONE_LABEL("סוג מספר", "נייד שמסומן \"בית\" או \"פקס\", או קווי שמסומן \"נייד\". התיקון משנה רק את התווית."),
     REPEATED("מספר שמור פעמיים", "אותו מספר או מייל מופיע כמה פעמים באותו איש קשר. העותקים המיותרים יימחקו."),
     MISSING_NAME("חסר שם", "אנשי קשר בלי שם, או שהשם הוא בעצם מספר. אפשר להקליד שם."),
+    NAME_TAG(
+        "תוספות קבועות בשם",
+        "קוד או תגית שחוזרים בשמות של הרבה אנשי קשר, כמו \"ס005\" או \"Tz\". אפשר להסיר את התוספת, או להעביר לארכיון ולמחוק את כל מי שנושא אותה.",
+        deletesContacts = true,
+        archives = true,
+    ),
     SUSPICIOUS_NAME(
         "שמות חשודים",
         "שם של אות אחת, תיאור במקום שם (\"שליח גז\", \"ההוא מהאירוע\") או אימוג'ים. אפשר לתקן את השם, להעביר לארכיון או למחוק.",
@@ -52,6 +58,7 @@ enum class Category(
             is Issue.PhoneFormat -> PHONE_FORMAT
             is Issue.PhoneLabel -> PHONE_LABEL
             is Issue.SuspiciousName -> SUSPICIOUS_NAME
+            is Issue.NameTag -> NAME_TAG
             is Issue.MissingAreaCode -> MISSING_AREA_CODE
             is Issue.RepeatedEntries -> REPEATED
             is Issue.MissingName -> MISSING_NAME
