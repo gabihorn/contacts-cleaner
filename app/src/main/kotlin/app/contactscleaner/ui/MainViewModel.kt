@@ -14,7 +14,10 @@ import app.contactscleaner.core.InactiveFilter
 import app.contactscleaner.core.Issue
 import app.contactscleaner.core.PhoneFormat
 import app.contactscleaner.core.PhoneNormalizer
+import app.contactscleaner.core.CsvExporter
 import app.contactscleaner.data.Action
+import app.contactscleaner.data.Archive
+import app.contactscleaner.data.ArchivedContact
 import app.contactscleaner.data.Backup
 import app.contactscleaner.data.ChangeLog
 import app.contactscleaner.data.ChangeRun
@@ -35,6 +38,7 @@ sealed interface Screen {
     data class Review(val category: Category) : Screen
     data object Log : Screen
     data object Me : Screen
+    data object Archive : Screen
 }
 
 data class UiState(
@@ -54,6 +58,7 @@ data class UiState(
     val scannedAt: Long = 0,
     /** When ME was last fetched; null if never. "Didn't save me" filtering needs it. */
     val meFetchedAt: Long? = null,
+    val archived: List<ArchivedContact> = emptyList(),
 ) {
     /** Without the call log every "last call" is unknown, so the idle part of the filter is ignored. */
     private val effectiveInactiveFilter
@@ -73,6 +78,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val region = detectRegion(app)
     private val changeLog = ChangeLog(app)
     private val meStore = MeStore(app)
+    private val archive = Archive(app)
 
     private val _state = MutableStateFlow(
         UiState(format = prefs.getString("format", null)?.let(PhoneFormat::valueOf) ?: PhoneFormat.E164)
@@ -82,7 +88,53 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val normalizer get() = PhoneNormalizer(region, _state.value.format)
 
     init {
-        viewModelScope.launch { reloadLog() }
+        viewModelScope.launch {
+            reloadLog()
+            reloadArchive()
+        }
+    }
+
+    private suspend fun reloadArchive() {
+        val items = withContext(Dispatchers.IO) { archive.all() }
+        _state.update { it.copy(archived = items) }
+    }
+
+    /** Puts archived contacts back in the address book. */
+    fun restore(ids: Set<Long>) = work("משחזר מהארכיון…") {
+        val items = _state.value.archived.filter { it.id in ids }
+        withContext(Dispatchers.IO) {
+            ContactsWriter(resolver, normalizer).restore(items.map { it.raws })
+            archive.remove(ids)
+        }
+        _state.update { it.copy(message = "${items.size} אנשי קשר חזרו לטלפון") }
+        reloadArchive()
+        if (_state.value.report != null) rescan()
+    }
+
+    fun deleteFromArchive(ids: Set<Long>) = work("מוחק מהארכיון…") {
+        withContext(Dispatchers.IO) { archive.remove(ids) }
+        _state.update { it.copy(message = "${ids.size} נמחקו לצמיתות מהארכיון") }
+        reloadArchive()
+    }
+
+    /** Writes [contacts] (or, if null, the whole address book) as a CSV for Excel. */
+    fun exportCsv(target: Uri, contacts: List<Contact>?) = work("מייצא…") {
+        val normalizer = normalizer
+        val count = withContext(Dispatchers.IO) {
+            val list = contacts ?: ContactsRepository(resolver).let { repo ->
+                repo.withActivity(repo.loadAll(), normalizer, _state.value.callLogGranted)
+            }
+            resolver.openOutputStream(target)?.use { it.write(CsvExporter.export(list).toByteArray(Charsets.UTF_8)) }
+                ?: error("לא ניתן לכתוב לקובץ")
+            list.size
+        }
+        _state.update { it.copy(message = "יוצאו $count אנשי קשר") }
+    }
+
+    /** Ticks only the duplicates that are safe to merge without a second look. */
+    fun selectConfidentDuplicates() = _state.update { s ->
+        val all = s.issuesIn(Category.DUPLICATES)
+        s.copy(selected = s.selected - all.map { it.id }.toSet() + all.filter { (it as Issue.Duplicates).confident }.map { it.id })
     }
 
     fun setFormat(format: PhoneFormat) {
@@ -180,13 +232,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val s = _state.value
         val chosen = s.issuesIn(category).filter { it.id in s.selected }
         val normalizer = normalizer
+        val now = System.currentTimeMillis()
         val run = withContext(Dispatchers.IO) {
             val title = if (action == Action.FIX) category.title else "${category.title}: מחיקה"
             ContactsWriter(resolver, normalizer).apply(title, chosen, s.inputs, action)
                 ?.also(changeLog::add)
+                ?.also { run ->
+                    if (action == Action.ARCHIVE_CONTACTS) {
+                        archive.add(chosen.mapNotNull(::contactOf).map { c ->
+                            ArchivedContact(c.id, c.title, now, run.id, run.before.filter { it.id in c.rawContactIds })
+                        })
+                    }
+                }
         }
         _state.update { it.copy(message = if (run == null) "לא היה מה לתקן" else "בוצעו ${run.lines.size} שינויים") }
         reloadLog()
+        reloadArchive()
         rescan()
     }
 
@@ -194,9 +255,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         withContext(Dispatchers.IO) {
             ContactsWriter(resolver, normalizer).undo(run)
             changeLog.markUndone(run.id)
+            archive.removeRun(run.id)
         }
         _state.update { it.copy(message = "השינויים של \"${run.title}\" בוטלו") }
         reloadLog()
+        reloadArchive()
         rescan()
     }
 
@@ -235,11 +298,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             is Issue.PhoneFormat, is Issue.RepeatedEntries, is Issue.NameCleanup -> true
             is Issue.MissingName -> it.suggested != null
             is Issue.MissingAreaCode -> it.guess != null
-            is Issue.EmptyContact, is Issue.InvalidPhone, is Issue.OutdatedPhone, is Issue.Inactive -> false
+            is Issue.PhoneLabel -> true
+            is Issue.EmptyContact, is Issue.InvalidPhone, is Issue.OutdatedPhone, is Issue.Inactive,
+            is Issue.SuspiciousName -> false
         }
     }.map { it.id }.toSet()
 
     private companion object {
+        /** The one contact a contact-level issue is about. */
+        fun contactOf(issue: Issue): Contact? = when (issue) {
+            is Issue.EmptyContact -> issue.contact
+            is Issue.Inactive -> issue.contact
+            is Issue.SuspiciousName -> issue.contact
+            else -> null
+        }
+
         /** The SIM's country, else the phone's locale; numbers without a country code are read as local to it. */
         fun detectRegion(context: Context): String {
             val tm = context.getSystemService(TelephonyManager::class.java)

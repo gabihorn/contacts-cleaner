@@ -31,6 +31,29 @@ sealed interface Issue {
         }
     }
 
+    /** A number whose label contradicts it, like a mobile saved as "home". */
+    data class PhoneLabel(
+        val contact: Contact,
+        val phone: PhoneEntry,
+        val line: LineType,
+        val suggestedType: Int,
+    ) : Issue {
+        override val id get() = "label:${phone.dataId}"
+    }
+
+    /**
+     * A name that doesn't look like a person's. [suggested] is a replacement
+     * when there's an obvious one (emoji removed, or the name from ME).
+     */
+    data class SuspiciousName(
+        val contact: Contact,
+        val name: NameEntry,
+        val problem: NameProblem,
+        val suggested: String?,
+    ) : Issue {
+        override val id get() = "suspicious:${name.dataId}"
+    }
+
     /** A number that is most likely out of service; the only fix is deleting it. */
     data class OutdatedPhone(
         val contact: Contact,
@@ -111,7 +134,14 @@ sealed interface Issue {
     }
 }
 
-enum class DuplicateReason { SAME_PHONE, SAME_EMAIL, SAME_NAME }
+enum class DuplicateReason {
+    SAME_PHONE,
+    SAME_EMAIL,
+    SAME_NAME,
+
+    /** Sounds alike: other spelling, other language, a nickname or a typo. Always worth a look. */
+    SIMILAR_NAME,
+}
 
 /** What a group of duplicates would look like after merging. */
 data class MergePreview(

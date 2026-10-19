@@ -45,6 +45,9 @@ class ContactAnalyzer(
 
         for (phone in contact.phones) {
             if (phone in repeatedPhones) continue
+            normalizer.lineType(phone.number)?.let { line ->
+                PhoneTypes.suggest(phone.type, line)?.let { issues += Issue.PhoneLabel(contact, phone, line, it) }
+            }
             when (val r = normalizer.normalize(phone.number)) {
                 is PhoneResult.Valid -> {
                     if (r.formatted != phone.number) issues += Issue.PhoneFormat(contact, phone, r.formatted)
@@ -67,7 +70,16 @@ class ContactAnalyzer(
             val guess = contact.meName ?: contact.emails.firstNotNullOfOrNull { Names.fromEmail(it.address) }
             issues += Issue.MissingName(contact, guess)
         } else if (name != null) {
-            Names.cleanup(displayName)?.let { issues += Issue.NameCleanup(contact, name, it) }
+            val problem = Names.suspiciousReason(displayName)
+            if (problem != null) {
+                val suggestion = when (problem) {
+                    NameProblem.EMOJI -> Names.stripEmoji(displayName).let { Names.cleanup(it) ?: it }
+                    else -> contact.meName
+                }
+                issues += Issue.SuspiciousName(contact, name, problem, suggestion)
+            } else {
+                Names.cleanup(displayName)?.let { issues += Issue.NameCleanup(contact, name, it) }
+            }
         }
 
         if (contact.phones.isEmpty() && contact.emails.isEmpty()) {
@@ -113,6 +125,26 @@ class ContactAnalyzer(
         linkAll(DuplicateReason.SAME_NAME) { c ->
             listOfNotNull(c.displayName?.takeUnless(Names::looksLikePhoneOrEmail)?.let(Names::matchKey))
         }
+        // Sound-alike names: the same sound key, or the same loose one (ו as vowel or v).
+        val soundKeys = contacts.map { c ->
+            c.displayName?.takeUnless(Names::looksLikePhoneOrEmail)?.let { Phonetic.key(it) }
+        }
+        linkAll(DuplicateReason.SIMILAR_NAME) { c ->
+            val name = c.displayName?.takeUnless(Names::looksLikePhoneOrEmail) ?: return@linkAll emptyList()
+            listOfNotNull(Phonetic.key(name), Phonetic.key(name, loose = true)?.let { "~$it" })
+        }
+        // And one dropped consonant ("אבי" / "אביב"), but only against another
+        // contact's exact key, so two different one-letter changes don't meet.
+        val byKey = HashMap<String, Int>()
+        soundKeys.forEachIndexed { i, k -> if (k != null) byKey.putIfAbsent(k, i) }
+        soundKeys.forEachIndexed { i, k ->
+            for (near in k?.let(Phonetic::nearKeys).orEmpty()) {
+                val j = byKey[near] ?: continue
+                if (j == i) continue
+                links += Triple(j, i, DuplicateReason.SIMILAR_NAME)
+                parent[find(i)] = find(j)
+            }
+        }
 
         val reasonsByGroup = HashMap<Int, MutableSet<DuplicateReason>>()
         for ((a, _, reason) in links) {
@@ -123,7 +155,10 @@ class ContactAnalyzer(
             .filter { it.size > 1 }
             .map { members ->
                 val group = members.map { contacts[it] }
-                val reasons = reasonsByGroup.getValue(find(members.first()))
+                // "Similar" adds nothing when the names are already the same.
+                val reasons = reasonsByGroup.getValue(find(members.first())).let {
+                    if (DuplicateReason.SAME_NAME in it) it - DuplicateReason.SIMILAR_NAME else it
+                }
                 val strong = DuplicateReason.SAME_PHONE in reasons || DuplicateReason.SAME_EMAIL in reasons
                 Issue.Duplicates(group, reasons, mergePreview(group), strong && namesCompatible(group))
             }

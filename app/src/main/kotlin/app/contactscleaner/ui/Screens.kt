@@ -59,6 +59,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.contactscleaner.core.Contact
 import app.contactscleaner.core.DuplicateReason
 import app.contactscleaner.core.IdleFilter
+import app.contactscleaner.core.LineType
+import app.contactscleaner.core.MimeTypes
+import app.contactscleaner.core.NameProblem
+import app.contactscleaner.core.PhoneTypes
 import app.contactscleaner.core.Issue
 import app.contactscleaner.core.Names
 import app.contactscleaner.core.OutdatedReason
@@ -106,6 +110,7 @@ fun App(vm: MainViewModel, meVm: MeViewModel) {
                             is Screen.Review -> screen.category.title
                             Screen.Log -> "יומן שינויים"
                             Screen.Me -> "ME: מי שמר אותי"
+                            Screen.Archive -> "ארכיון"
                         }
                     )
                 },
@@ -129,6 +134,7 @@ fun App(vm: MainViewModel, meVm: MeViewModel) {
                 Screen.Home -> HomeScreen(state, vm)
                 is Screen.Review -> CategoryScreen(screen.category, state, vm)
                 Screen.Log -> LogScreen(state, vm)
+                Screen.Archive -> ArchiveScreen(state, vm)
                 Screen.Me -> MeScreen(
                     meVm,
                     showMessage = vm::showMessage,
@@ -151,6 +157,33 @@ private fun rememberBackupLauncher(onPicked: (android.net.Uri) -> Unit) =
 private fun backupFileName() = "contacts-backup-${LocalDate.now()}.vcf"
 
 @Composable
+private fun rememberCsvLauncher(onPicked: (android.net.Uri) -> Unit) =
+    rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri ->
+        if (uri != null) onPicked(uri)
+    }
+
+private fun csvFileName() = "contacts-${LocalDate.now()}.csv"
+
+/** The contacts a category's issues are about, for exporting that list. */
+private fun contactsOf(issues: List<Issue>): List<Contact> = issues.flatMap { issue ->
+    when (issue) {
+        is Issue.Duplicates -> issue.contacts
+        is Issue.PhoneFormat -> listOf(issue.contact)
+        is Issue.MissingAreaCode -> listOf(issue.contact)
+        is Issue.PhoneLabel -> listOf(issue.contact)
+        is Issue.RepeatedEntries -> listOf(issue.contact)
+        is Issue.MissingName -> listOf(issue.contact)
+        is Issue.SuspiciousName -> listOf(issue.contact)
+        is Issue.NameCleanup -> listOf(issue.contact)
+        is Issue.EmptyContact -> listOf(issue.contact)
+        is Issue.Inactive -> listOf(issue.contact)
+        is Issue.OutdatedPhone -> listOf(issue.contact)
+        is Issue.InvalidPhone -> listOf(issue.contact)
+    }
+}.distinctBy { it.id }
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
 private fun HomeScreen(state: UiState, vm: MainViewModel) {
     val context = LocalContext.current
     fun granted() = listOf(Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS)
@@ -164,6 +197,7 @@ private fun HomeScreen(state: UiState, vm: MainViewModel) {
         if (hasPermission) vm.scan()
     }
     val backupLauncher = rememberBackupLauncher { vm.backup(it) }
+    val exportAll = rememberCsvLauncher { vm.exportCsv(it, contacts = null) }
 
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
@@ -214,8 +248,16 @@ private fun HomeScreen(state: UiState, vm: MainViewModel) {
         }
 
         item {
-            OutlinedButton(onClick = { vm.show(Screen.Log) }) {
-                Text(if (state.log.isEmpty()) "יומן שינויים" else "יומן שינויים (${state.log.size})")
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { vm.show(Screen.Log) }) {
+                    Text(if (state.log.isEmpty()) "יומן שינויים" else "יומן שינויים (${state.log.size})")
+                }
+                OutlinedButton(onClick = { vm.show(Screen.Archive) }) {
+                    Text(if (state.archived.isEmpty()) "ארכיון" else "ארכיון (${state.archived.size})")
+                }
+                OutlinedButton(onClick = { exportAll.launch(csvFileName()) }, enabled = state.busy == null) {
+                    Text("ייצוא לאקסל")
+                }
             }
         }
 
@@ -264,6 +306,7 @@ private fun HomeScreen(state: UiState, vm: MainViewModel) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun CategoryScreen(category: Category, state: UiState, vm: MainViewModel) {
     val issues = state.issuesIn(category)
@@ -273,14 +316,19 @@ private fun CategoryScreen(category: Category, state: UiState, vm: MainViewModel
     // Which action the backup-then-apply flow continues with once a file is picked.
     var afterBackup by remember { mutableStateOf(Action.FIX) }
     val backupThenApply = rememberBackupLauncher { vm.backup(it, thenApply = category to afterBackup) }
+    val exportList = rememberCsvLauncher { vm.exportCsv(it, contactsOf(issues)) }
 
     Column(Modifier.fillMaxSize()) {
         Text(category.description, Modifier.padding(16.dp), style = MaterialTheme.typography.bodyMedium)
         if (category == Category.INACTIVE) InactiveFilterPanel(state, vm)
         if (selectable) {
-            Row(Modifier.padding(horizontal = 8.dp)) {
+            FlowRow(Modifier.padding(horizontal = 8.dp)) {
                 TextButton(onClick = { vm.setAll(category, true) }) { Text("סמן הכל") }
                 TextButton(onClick = { vm.setAll(category, false) }) { Text("נקה סימון") }
+                if (category == Category.DUPLICATES) {
+                    TextButton(onClick = vm::selectConfidentDuplicates) { Text("סמן רק ודאיים") }
+                }
+                TextButton(onClick = { exportList.launch(csvFileName()) }) { Text("ייצוא הרשימה") }
             }
         }
         HorizontalDivider()
@@ -315,13 +363,20 @@ private fun CategoryScreen(category: Category, state: UiState, vm: MainViewModel
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
                         ) { Text("מחיקת $chosen מספרים") }
                     }
+                    if (category.archives) {
+                        OutlinedButton(
+                            onClick = { confirming = Action.ARCHIVE_CONTACTS },
+                            enabled = enabled,
+                            modifier = Modifier.weight(1f),
+                        ) { Text("ארכיון $chosen") }
+                    }
                     if (category.deletesContacts) {
                         OutlinedButton(
                             onClick = { confirming = Action.DELETE_CONTACTS },
                             enabled = enabled,
                             modifier = Modifier.weight(1f),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                        ) { Text("מחיקת $chosen אנשי קשר") }
+                        ) { Text(if (category.archives) "מחיקה $chosen" else "מחיקת $chosen אנשי קשר") }
                     }
                 }
             }
@@ -338,6 +393,7 @@ private fun CategoryScreen(category: Category, state: UiState, vm: MainViewModel
                         Action.FIX -> "לבצע $chosen תיקונים?"
                         Action.DELETE_NUMBERS -> "למחוק $chosen מספרים?"
                         Action.DELETE_CONTACTS -> "למחוק $chosen אנשי קשר?"
+                        Action.ARCHIVE_CONTACTS -> "להעביר $chosen אנשי קשר לארכיון?"
                     }
                 )
             },
@@ -347,6 +403,7 @@ private fun CategoryScreen(category: Category, state: UiState, vm: MainViewModel
                         Action.FIX -> "השינויים ייכתבו לאנשי הקשר"
                         Action.DELETE_NUMBERS -> "המספרים יימחקו מאנשי הקשר"
                         Action.DELETE_CONTACTS -> "אנשי הקשר יימחקו"
+                        Action.ARCHIVE_CONTACTS -> "אנשי הקשר יישמרו בארכיון של האפליקציה, יימחקו מהטלפון"
                     } + " ויסונכרנו לחשבון גוגל. אפשר לבטל מיומן השינויים, ובכל זאת מומלץ לשמור גם גיבוי."
                 )
             },
@@ -518,6 +575,35 @@ private fun IssueBody(issue: Issue, state: UiState, vm: MainViewModel) {
             val removed = issue.repeatedPhones.map { it.number } + issue.repeatedEmails.map { it.address }
             Text("יימחקו העותקים: " + removed.joinToString(", ") { ltr(it) }, style = small)
         }
+        is Issue.PhoneLabel -> {
+            Title(issue.contact.title)
+            Text(ltr(issue.phone.number), style = small)
+            Text(
+                (if (issue.line == LineType.MOBILE) "מספר נייד" else "מספר קווי") +
+                    " שמסומן \"${typeLabel(issue.phone.type)}\". יסומן \"${typeLabel(issue.suggestedType)}\".",
+                fontWeight = FontWeight.Medium,
+            )
+        }
+        is Issue.SuspiciousName -> {
+            ContactDetails(issue.contact)
+            Text(
+                when (issue.problem) {
+                    NameProblem.SINGLE_LETTER -> "שם של אות אחת"
+                    NameProblem.GENERIC -> "תיאור במקום שם"
+                    NameProblem.EMOJI -> "אימוג'ים בשם"
+                    NameProblem.ONLY_EMOJI -> "רק אימוג'ים"
+                },
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            OutlinedTextField(
+                value = state.inputs[issue.id] ?: issue.suggested ?: issue.name.displayName.orEmpty(),
+                onValueChange = { vm.setInput(issue.id, it) },
+                label = { Text("שם חדש") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
         is Issue.NameCleanup -> {
             Text("לפני: \"${issue.name.displayName}\"", style = small)
             Text("אחרי: \"${issue.suggested}\"", fontWeight = FontWeight.Medium)
@@ -553,6 +639,7 @@ private fun IssueBody(issue: Issue, state: UiState, vm: MainViewModel) {
                         DuplicateReason.SAME_PHONE -> "אותו מספר"
                         DuplicateReason.SAME_EMAIL -> "אותו מייל"
                         DuplicateReason.SAME_NAME -> "אותו שם"
+                        DuplicateReason.SIMILAR_NAME -> "שם דומה"
                     }
                 } + if (issue.confident) "" else " · כדאי לבדוק",
                 style = MaterialTheme.typography.labelMedium,
@@ -667,3 +754,101 @@ private fun LogScreen(state: UiState, vm: MainViewModel) {
 }
 
 private const val MAX_LOG_LINES = 8
+
+private fun typeLabel(type: Int) = when (type) {
+    PhoneTypes.MOBILE -> "נייד"
+    PhoneTypes.HOME -> "בית"
+    PhoneTypes.WORK -> "עבודה"
+    PhoneTypes.FAX_HOME, PhoneTypes.FAX_WORK -> "פקס"
+    else -> "אחר"
+}
+
+/** Contacts moved out of the phone: restore them, or delete them for good. */
+@Composable
+private fun ArchiveScreen(state: UiState, vm: MainViewModel) {
+    var selected by remember { mutableStateOf(emptySet<Long>()) }
+    var confirmDelete by remember { mutableStateOf(false) }
+    val timeFormat = remember { DateTimeFormatter.ofPattern("dd/MM/yyyy") }
+
+    if (state.archived.isEmpty()) {
+        Text("הארכיון ריק. אפשר להעביר אליו אנשי קשר מ\"ניקוי לפי פעילות\", \"שמות חשודים\" ו\"אנשי קשר ריקים\".", Modifier.padding(16.dp))
+        return
+    }
+    Column(Modifier.fillMaxSize()) {
+        Text(
+            "אנשי קשר שהועברו לכאן נמחקו מהטלפון, אבל כל הפרטים שלהם שמורים באפליקציה. שחזור מחזיר אותם בדיוק כמו שהיו.",
+            Modifier.padding(16.dp),
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Row(Modifier.padding(horizontal = 8.dp)) {
+            TextButton(onClick = { selected = state.archived.map { it.id }.toSet() }) { Text("סמן הכל") }
+            TextButton(onClick = { selected = emptySet() }) { Text("נקה סימון") }
+        }
+        HorizontalDivider()
+        LazyColumn(
+            Modifier.weight(1f),
+            contentPadding = PaddingValues(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            items(state.archived, key = { it.id }) { item ->
+                val isSelected = item.id in selected
+                Card(
+                    colors = if (isSelected) CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                    else CardDefaults.cardColors(),
+                ) {
+                    Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = isSelected, onCheckedChange = {
+                            selected = if (isSelected) selected - item.id else selected + item.id
+                        })
+                        Column(Modifier.weight(1f)) {
+                            Title(item.title)
+                            val phones = item.raws.flatMap { r -> r.rows.filter { it.mimeType == MimeTypes.PHONE }.mapNotNull { it.data1 } }
+                            if (phones.isNotEmpty()) Text(phones.distinct().joinToString(", ") { ltr(it) }, style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                "הועבר לארכיון: " + Instant.ofEpochMilli(item.archivedAt).atZone(ZoneId.systemDefault()).format(timeFormat),
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        Surface(tonalElevation = 3.dp) {
+            Row(
+                Modifier.fillMaxWidth().padding(16.dp).navigationBarsPadding(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                val enabled = selected.isNotEmpty() && state.busy == null
+                Button(
+                    onClick = {
+                        vm.restore(selected)
+                        selected = emptySet()
+                    },
+                    enabled = enabled,
+                    modifier = Modifier.weight(1f),
+                ) { Text("שחזור ${selected.size}") }
+                OutlinedButton(
+                    onClick = { confirmDelete = true },
+                    enabled = enabled,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) { Text("מחיקה לצמיתות") }
+            }
+        }
+    }
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("למחוק ${selected.size} לצמיתות?") },
+            text = { Text("הם יימחקו גם מהארכיון, ואי אפשר יהיה לשחזר אותם, אלא מקובץ גיבוי.") },
+            confirmButton = {
+                Button(onClick = {
+                    confirmDelete = false
+                    vm.deleteFromArchive(selected)
+                    selected = emptySet()
+                }) { Text("מחיקה") }
+            },
+            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("ביטול") } },
+        )
+    }
+}

@@ -120,6 +120,55 @@ object Names {
         return tokens.joinToString(" ")
     }
 
+    /** Removes emoji and pictographs ("משה ❤️" -> "משה"); letters, digits and punctuation stay. */
+    fun stripEmoji(name: String): String {
+        val out = StringBuilder()
+        var i = 0
+        while (i < name.length) {
+            val cp = name.codePointAt(i)
+            if (!isEmoji(cp)) out.appendCodePoint(cp)
+            i += Character.charCount(cp)
+        }
+        return spaces.replace(out.toString(), " ").trim()
+    }
+
+    fun hasEmoji(name: String): Boolean = name.codePoints().anyMatch(::isEmoji)
+
+    private fun isEmoji(cp: Int) =
+        cp in 0x1F000..0x1FAFF || cp in 0x2600..0x27BF || cp in 0x2B00..0x2BFF ||
+            cp == 0xFE0F || cp == 0x200D || cp == 0x20E3 ||
+            Character.getType(cp) == Character.OTHER_SYMBOL.toInt()
+
+    /** Words that describe a role or a place, not a person ("שליח", "אינסטלטור", "מהעבודה"). */
+    private val genericWords = setOf(
+        "שליח", "שליחויות", "משלוחים", "אינסטלטור", "חשמלאי", "מונית", "מוניות", "נהג", "טכנאי", "מנעולן",
+        "גז", "מוסך", "הובלות", "מוביל", "שיפוצניק", "שיפוצים", "צבעי", "גנן", "ספק", "מוכר", "מוכרת",
+        "מתווך", "תיווך", "דירה", "שכן", "שכנה", "ההוא", "ההיא", "מישהו", "מישהי", "לא", "לענות", "ספאם",
+        "פרסומת", "חסום", "חדש", "חדשה", "מומלץ", "מומלצת", "טוב", "של", "את", "עם", "מספר", "טלפון",
+        "שרברב", "מזגנים", "מזגן", "הסעות", "קייטרינג", "צלם", "דיג'יי", "אולם", "בנק", "קופה", "שירות", "לקוחות",
+        "spam", "delivery", "taxi", "plumber", "electrician", "unknown", "new", "number", "dont", "answer",
+    )
+
+    /**
+     * Why [name] doesn't look like a person's name, or null if it does.
+     * Only whole-name patterns count: "משה חשמלאי" is fine, "חשמלאי מומלץ" isn't.
+     */
+    fun suspiciousReason(name: String?): NameProblem? {
+        if (name.isNullOrBlank() || looksLikePhoneOrEmail(name)) return null
+        val letters = name.count { it.isLetter() }
+        if (letters == 0) return if (hasEmoji(name)) NameProblem.ONLY_EMOJI else null
+        if (letters == 1) return NameProblem.SINGLE_LETTER
+        val words = name.lowercase().split(nonWord).filter { it.isNotEmpty() }
+        val generic = words.all { w ->
+            w in genericWords || w.all(Char::isDigit) ||
+                // "מהאירוע", "מהעבודה", "שלהגן": where you met them, not who they are.
+                (w.length > 3 && (w.startsWith("מה") || w.startsWith("של")))
+        }
+        if (words.isNotEmpty() && generic) return NameProblem.GENERIC
+        if (hasEmoji(name)) return NameProblem.EMOJI
+        return null
+    }
+
     /** True if the "name" is really just a phone number or an email address. */
     fun looksLikePhoneOrEmail(name: String): Boolean {
         val n = name.trim()

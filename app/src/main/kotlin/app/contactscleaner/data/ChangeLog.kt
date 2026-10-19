@@ -1,12 +1,10 @@
 package app.contactscleaner.data
 
 import android.content.Context
-import app.contactscleaner.core.DataRow
 import app.contactscleaner.core.RawContact
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.util.Base64
 
 /**
  * One "fix" run: what the user saw ([lines]) and the state of every raw
@@ -57,7 +55,7 @@ class ChangeLog(context: Context) {
         .put("title", run.title)
         .put("lines", JSONArray(run.lines))
         .put("undone", run.undone)
-        .put("before", JSONArray().apply { run.before.forEach { put(rawToJson(it)) } })
+        .put("before", JSONArray().apply { run.before.forEach { put(RawContactJson.toJson(it)) } })
         .put("created", JSONArray(run.created))
 
     private fun runFromJson(o: JSONObject) = ChangeRun(
@@ -65,48 +63,10 @@ class ChangeLog(context: Context) {
         time = o.getLong("time"),
         title = o.getString("title"),
         lines = o.getJSONArray("lines").let { a -> (0 until a.length()).map { a.getString(it) } },
-        before = o.getJSONArray("before").let { a -> (0 until a.length()).map { rawFromJson(a.getJSONObject(it)) } },
+        before = o.getJSONArray("before").let { a -> (0 until a.length()).map { RawContactJson.fromJson(a.getJSONObject(it)) } },
         undone = o.optBoolean("undone"),
         created = o.optJSONArray("created")?.let { a -> (0 until a.length()).map(a::getLong) }.orEmpty(),
     )
-
-    private fun rawToJson(raw: RawContact) = JSONObject()
-        .put("id", raw.id)
-        .put("contactId", raw.contactId)
-        .put("accountType", raw.accountType ?: JSONObject.NULL)
-        .put("accountName", raw.accountName ?: JSONObject.NULL)
-        .put("dataSet", raw.dataSet ?: JSONObject.NULL)
-        .put("rows", JSONArray().apply {
-            raw.rows.forEach { row ->
-                put(JSONObject()
-                    .put("id", row.id)
-                    .put("mime", row.mimeType)
-                    .put("values", JSONObject().apply { row.values.forEach { (k, v) -> put(k, v ?: JSONObject.NULL) } })
-                    .put("blob", row.blob?.let { Base64.getEncoder().encodeToString(it) } ?: JSONObject.NULL))
-            }
-        })
-
-    private fun rawFromJson(o: JSONObject) = RawContact(
-        id = o.getLong("id"),
-        contactId = o.getLong("contactId"),
-        accountType = o.optStringOrNull("accountType"),
-        accountName = o.optStringOrNull("accountName"),
-        dataSet = o.optStringOrNull("dataSet"),
-        rows = o.getJSONArray("rows").let { a ->
-            (0 until a.length()).map { i ->
-                val r = a.getJSONObject(i)
-                val values = r.getJSONObject("values")
-                DataRow(
-                    id = r.getLong("id"),
-                    mimeType = r.getString("mime"),
-                    values = values.keys().asSequence().associateWith { values.optStringOrNull(it) },
-                    blob = r.optStringOrNull("blob")?.let { Base64.getDecoder().decode(it) },
-                )
-            }
-        },
-    )
-
-    private fun JSONObject.optStringOrNull(key: String): String? = if (isNull(key)) null else optString(key)
 
     private companion object {
         const val MAX_RUNS = 30

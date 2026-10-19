@@ -13,6 +13,8 @@ enum class PhoneFormat {
     INTERNATIONAL,
 }
 
+enum class LineType { MOBILE, LANDLINE }
+
 enum class OutdatedReason {
     /** 05X + 6 digits: mobile numbers got a 7th digit in 1999. */
     OLD_MOBILE,
@@ -143,6 +145,21 @@ class PhoneNormalizer(
     /** [raw] with [areaCode] in front, formatted; null if that still isn't a valid number. */
     fun withAreaCode(raw: String, areaCode: String): String? =
         (normalize(areaCode + raw.filter { it.isDigit() }) as? PhoneResult.Valid)?.formatted
+
+    /** Mobile or landline, when libphonenumber can tell; null otherwise. */
+    fun lineType(raw: String): LineType? {
+        val key = (normalize(raw) as? PhoneResult.Valid)?.key ?: return null
+        val type = try {
+            util.getNumberType(util.parse(key, null))
+        } catch (_: NumberParseException) {
+            return null
+        }
+        return when (type) {
+            PhoneNumberUtil.PhoneNumberType.MOBILE -> LineType.MOBILE
+            PhoneNumberUtil.PhoneNumberType.FIXED_LINE -> LineType.LANDLINE
+            else -> null
+        }
+    }
 
     /** Comparison key: E.164 when valid, the bare digits otherwise. */
     fun key(raw: String): String = when (val r = normalize(raw)) {

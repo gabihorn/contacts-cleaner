@@ -18,6 +18,7 @@ import app.contactscleaner.core.MimeTypes
 import app.contactscleaner.core.PhoneEntry
 import app.contactscleaner.core.PhoneNormalizer
 import app.contactscleaner.core.PhoneResult
+import app.contactscleaner.core.PhoneTypes
 import app.contactscleaner.core.RawContact
 
 /** What to do with the chosen issues. */
@@ -29,6 +30,9 @@ enum class Action {
 
     /** Delete the contact each issue is about. */
     DELETE_CONTACTS,
+
+    /** Like [DELETE_CONTACTS], but the caller keeps the snapshot in the [Archive]. */
+    ARCHIVE_CONTACTS,
 }
 
 /** Writes the fixes the user approved back to the address book, and undoes them. */
@@ -54,10 +58,10 @@ class ContactsWriter(
         for (issue in issues) {
             val opsBefore = ops.size
             var line: String? = null
-            if (action == Action.DELETE_CONTACTS) {
+            if (action == Action.DELETE_CONTACTS || action == Action.ARCHIVE_CONTACTS) {
                 val contact = issue.contactOrNull() ?: continue
                 contact.rawContactIds.forEach { ops += deleteRaw(it) }
-                lines += "נמחק: ${contact.title}"
+                lines += (if (action == Action.ARCHIVE_CONTACTS) "הועבר לארכיון: " else "נמחק: ") + contact.title
                 continue
             }
             if (action == Action.DELETE_NUMBERS) {
@@ -95,6 +99,20 @@ class ContactsWriter(
                         line = "${issue.contact.title} ← \"$name\""
                     }
                 }
+                is Issue.PhoneLabel -> {
+                    ops += ContentProviderOperation.newUpdate(dataUri(issue.phone.dataId))
+                        .withValue(Phone.TYPE, issue.suggestedType)
+                        .withValue(Phone.LABEL, null)
+                        .build()
+                    line = "${issue.contact.title}: ${ltr(issue.phone.number)} ← ${typeName(issue.suggestedType)}"
+                }
+                is Issue.SuspiciousName -> {
+                    val name = (inputs[issue.id] ?: issue.suggested)?.trim().orEmpty()
+                    if (name.isNotEmpty() && name != issue.name.displayName) {
+                        ops += updateName(issue.name.dataId, name)
+                        line = "\"${issue.name.displayName}\" ← \"$name\""
+                    }
+                }
                 is Issue.EmptyContact -> {
                     issue.contact.rawContactIds.forEach { ops += deleteRaw(it) }
                     line = "נמחק: ${issue.contact.title}"
@@ -126,6 +144,41 @@ class ContactsWriter(
      * exist get their data rows replaced, deleted ones are recreated in the
      * same account. Changes made to those contacts since the run are lost.
      */
+    /**
+     * Brings archived contacts back: each raw contact is recreated in its
+     * account, and the raw contacts of one archived contact are kept together.
+     */
+    fun restore(contacts: List<List<RawContact>>) {
+        for (raws in contacts) {
+            val ids = raws.mapNotNull(::recreate)
+            val together = ArrayList<ContentProviderOperation>()
+            for (i in ids.indices) for (j in i + 1 until ids.size) {
+                together += aggregation(ids[i], ids[j], AggregationExceptions.TYPE_KEEP_TOGETHER)
+            }
+            applyInBatches(together)
+        }
+    }
+
+    /** Inserts a fresh copy of [raw] in its account; returns the new raw contact id. */
+    private fun recreate(raw: RawContact): Long? {
+        val ops = arrayListOf(
+            ContentProviderOperation.newInsert(RawContacts.CONTENT_URI)
+                .withValue(RawContacts.ACCOUNT_TYPE, raw.accountType)
+                .withValue(RawContacts.ACCOUNT_NAME, raw.accountName)
+                .withValue(RawContacts.DATA_SET, raw.dataSet)
+                .build()
+        )
+        raw.rows.forEach { ops += insertRow(it, rawContactId = null) }
+        val results = resolver.applyBatch(ContactsContract.AUTHORITY, ops)
+        return results.firstOrNull()?.uri?.let(ContentUris::parseId)
+    }
+
+    private fun typeName(type: Int) = when (type) {
+        PhoneTypes.MOBILE -> "נייד"
+        PhoneTypes.HOME -> "בית"
+        else -> "אחר"
+    }
+
     fun undo(run: ChangeRun) {
         applyInBatches(run.created.map(::deleteRaw))
         val stillThere = repository.loadRaw(run.before.map { it.id }).map { it.id }.toSet()
@@ -145,14 +198,7 @@ class ContactsWriter(
                 applyInBatches(ops)
                 restoredIds[raw.id] = raw.contactId
             } else {
-                ops += ContentProviderOperation.newInsert(RawContacts.CONTENT_URI)
-                    .withValue(RawContacts.ACCOUNT_TYPE, raw.accountType)
-                    .withValue(RawContacts.ACCOUNT_NAME, raw.accountName)
-                    .withValue(RawContacts.DATA_SET, raw.dataSet)
-                    .build()
-                raw.rows.forEach { ops += insertRow(it, rawContactId = null) }
-                val results = resolver.applyBatch(ContactsContract.AUTHORITY, ops)
-                val newId = results.firstOrNull()?.uri?.let(ContentUris::parseId) ?: continue
+                val newId = recreate(raw) ?: continue
                 restoredIds[newId] = raw.contactId
             }
         }
@@ -175,6 +221,8 @@ class ContactsWriter(
         is Issue.NameCleanup -> listOf(issue.contact)
         is Issue.MissingName -> listOf(issue.contact)
         is Issue.EmptyContact -> listOf(issue.contact)
+        is Issue.PhoneLabel -> listOf(issue.contact)
+        is Issue.SuspiciousName -> listOf(issue.contact)
         is Issue.Inactive -> listOf(issue.contact)
         is Issue.OutdatedPhone -> listOf(issue.contact)
         is Issue.InvalidPhone -> listOf(issue.contact)
