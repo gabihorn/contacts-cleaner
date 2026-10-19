@@ -4,6 +4,12 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// A fixed signing key, so every build installs as an update over the last one.
+// CI decodes it from the SIGNING_KEYSTORE_BASE64 / SIGNING_PASSWORD secrets;
+// without it, release builds fall back to the (per-machine) debug key.
+val signingKeystore: String? = System.getenv("SIGNING_KEYSTORE_PATH")
+val signingPassword: String? = System.getenv("SIGNING_PASSWORD")
+
 android {
     namespace = "app.contactscleaner"
     compileSdk = 35
@@ -12,13 +18,27 @@ android {
         applicationId = "app.contactscleaner"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // Each CI run gets a higher version, so phones always see it as an update.
+        val build = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
+        versionCode = build
+        versionName = "0.2.$build"
+    }
+
+    signingConfigs {
+        if (signingKeystore != null && signingPassword != null) {
+            create("fixed") {
+                storeFile = file(signingKeystore)
+                storePassword = signingPassword
+                keyAlias = "contacts-cleaner"
+                keyPassword = signingPassword
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("fixed") ?: signingConfigs.getByName("debug")
         }
     }
 
