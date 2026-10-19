@@ -490,10 +490,11 @@ private fun IssueBody(issue: Issue, state: UiState, vm: MainViewModel) {
         is Issue.EmptyContact -> Title(issue.contact.title)
         is Issue.Inactive -> {
             ContactDetails(issue.contact)
+            val time = issue.lastCall
             val lastCall = when {
                 !state.callLogGranted -> "לא ידוע (אין הרשאה ליומן שיחות)"
-                issue.lastCall == null -> "אף פעם"
-                else -> Instant.ofEpochMilli(issue.lastCall).atZone(ZoneId.systemDefault()).format(DATE)
+                time == null -> "אף פעם"
+                else -> Instant.ofEpochMilli(time).atZone(ZoneId.systemDefault()).format(DATE)
             }
             Text(
                 (if (issue.onWhatsApp) "יש וואטסאפ" else "אין וואטסאפ") + " · שיחה אחרונה: $lastCall",
