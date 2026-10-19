@@ -8,6 +8,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -57,6 +59,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.contactscleaner.core.Contact
 import app.contactscleaner.core.DuplicateReason
 import app.contactscleaner.core.Issue
+import app.contactscleaner.core.Names
 import app.contactscleaner.core.OutdatedReason
 import app.contactscleaner.core.PhoneFormat
 import app.contactscleaner.data.Action
@@ -415,11 +418,43 @@ private fun IssueBody(issue: Issue, state: UiState, vm: MainViewModel) {
             issue.contacts.forEach { ContactDetails(it) }
             HorizontalDivider(Modifier.padding(vertical = 4.dp))
             Text("אחרי איחוד:", style = MaterialTheme.typography.labelMedium)
-            Title(issue.merged.name ?: "(ללא שם)")
+            MergeNamePicker(issue, state, vm)
             val details = issue.merged.phones + issue.merged.emails
             if (details.isNotEmpty()) Text(details.joinToString(", ") { ltr(it) }, style = small)
         }
     }
+}
+
+/**
+ * The name the merged contact will get: one of the existing names (cleaned
+ * up), or one the user types. Picking or typing also selects the merge.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun MergeNamePicker(issue: Issue.Duplicates, state: UiState, vm: MainViewModel) {
+    val options = (listOfNotNull(issue.merged.name) + issue.contacts.mapNotNull { it.displayName })
+        .filterNot(Names::looksLikePhoneOrEmail)
+        .map { Names.cleanup(it) ?: it }
+        .distinct()
+    val chosen = state.inputs[issue.id] ?: issue.merged.name.orEmpty()
+
+    Text("שם אחרי האיחוד:", style = MaterialTheme.typography.labelMedium)
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        options.forEach { option ->
+            FilterChip(
+                selected = option == chosen,
+                onClick = { vm.setInput(issue.id, option) },
+                label = { Text(option) },
+            )
+        }
+    }
+    OutlinedTextField(
+        value = chosen,
+        onValueChange = { vm.setInput(issue.id, it) },
+        label = { Text("או הקלד שם אחר") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth(),
+    )
 }
 
 @Composable

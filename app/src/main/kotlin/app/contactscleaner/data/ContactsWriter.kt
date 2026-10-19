@@ -93,8 +93,9 @@ class ContactsWriter(
                 is Issue.Duplicates -> {
                     val raws = issue.contacts.flatMap { it.rawContactIds }.mapNotNull { rawById[it] }
                     if (raws.size >= 2) {
-                        ops += merge(raws, issue.merged.name)
-                        line = "אוחדו: ${issue.contacts.joinToString(" + ") { it.title }}"
+                        val name = inputs[issue.id]?.trim()?.takeIf { it.isNotEmpty() } ?: issue.merged.name
+                        ops += merge(raws, name)
+                        line = "אוחדו: ${issue.contacts.joinToString(" + ") { it.title }}" + (name?.let { " ← \"$it\"" } ?: "")
                     }
                 }
                 // Nothing to fix; these can only be deleted (Action.DELETE_NUMBERS).
