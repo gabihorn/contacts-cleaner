@@ -49,3 +49,30 @@ class InactiveFilterTest {
         assertTrue(inactive.single().onWhatsApp)
     }
 }
+
+class MeEnrichmentTest {
+    @Test
+    fun `didn't save me filter needs an explicit false`() {
+        fun issue(savedMe: Boolean?) = Issue.Inactive(
+            Contact(1, NameEntry(2, "משה"), phones = listOf(PhoneEntry(3, "+972528123456")), savedMe = savedMe),
+            onWhatsApp = true,
+            lastCall = null,
+        )
+        val f = InactiveFilter(WhatsAppFilter.ANY, IdleFilter.ANY, SavedMeFilter.DIDNT_SAVE_ME)
+        assertTrue(f.matches(issue(false), 0))
+        assertFalse(f.matches(issue(true), 0))
+        assertFalse(f.matches(issue(null), 0))
+    }
+
+    @Test
+    fun `missing name suggestion prefers the ME name`() {
+        val c = Contact(
+            1, null,
+            phones = listOf(PhoneEntry(3, "+972528123456")),
+            emails = listOf(EmailEntry(4, "david.levi@gmail.com")),
+            meName = "דוד לוי",
+        )
+        val issue = ContactAnalyzer(PhoneNormalizer("IL")).analyze(listOf(c)).ofType<Issue.MissingName>().single()
+        assertEquals("דוד לוי", issue.suggested)
+    }
+}

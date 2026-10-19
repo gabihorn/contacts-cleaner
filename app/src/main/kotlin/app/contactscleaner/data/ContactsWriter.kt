@@ -127,6 +127,7 @@ class ContactsWriter(
      * same account. Changes made to those contacts since the run are lost.
      */
     fun undo(run: ChangeRun) {
+        applyInBatches(run.created.map(::deleteRaw))
         val stillThere = repository.loadRaw(run.before.map { it.id }).map { it.id }.toSet()
         val restoredIds = mutableMapOf<Long, Long>() // new raw id -> original contact id
 

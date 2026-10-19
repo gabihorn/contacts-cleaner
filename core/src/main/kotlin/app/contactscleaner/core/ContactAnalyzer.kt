@@ -64,7 +64,7 @@ class ContactAnalyzer(
         val name = contact.name
         val displayName = contact.displayName
         if (displayName == null || Names.looksLikePhoneOrEmail(displayName)) {
-            val guess = contact.emails.firstNotNullOfOrNull { Names.fromEmail(it.address) }
+            val guess = contact.meName ?: contact.emails.firstNotNullOfOrNull { Names.fromEmail(it.address) }
             issues += Issue.MissingName(contact, guess)
         } else if (name != null) {
             Names.cleanup(displayName)?.let { issues += Issue.NameCleanup(contact, name, it) }

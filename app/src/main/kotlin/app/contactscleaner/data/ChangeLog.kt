@@ -19,6 +19,8 @@ data class ChangeRun(
     val lines: List<String>,
     val before: List<RawContact>,
     val undone: Boolean = false,
+    /** Raw contacts this run added; undo deletes them. */
+    val created: List<Long> = emptyList(),
 )
 
 /** Keeps the latest runs in a JSON file in the app's private storage. */
@@ -56,6 +58,7 @@ class ChangeLog(context: Context) {
         .put("lines", JSONArray(run.lines))
         .put("undone", run.undone)
         .put("before", JSONArray().apply { run.before.forEach { put(rawToJson(it)) } })
+        .put("created", JSONArray(run.created))
 
     private fun runFromJson(o: JSONObject) = ChangeRun(
         id = o.getLong("id"),
@@ -64,6 +67,7 @@ class ChangeLog(context: Context) {
         lines = o.getJSONArray("lines").let { a -> (0 until a.length()).map { a.getString(it) } },
         before = o.getJSONArray("before").let { a -> (0 until a.length()).map { rawFromJson(a.getJSONObject(it)) } },
         undone = o.optBoolean("undone"),
+        created = o.optJSONArray("created")?.let { a -> (0 until a.length()).map(a::getLong) }.orEmpty(),
     )
 
     private fun rawToJson(raw: RawContact) = JSONObject()
