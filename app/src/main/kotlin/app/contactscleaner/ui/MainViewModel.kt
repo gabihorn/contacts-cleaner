@@ -236,10 +236,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
         }
-        _state.update { it.copy(message = if (run == null) "לא היה מה לתקן" else "בוצעו ${run.lines.size} שינויים") }
+        if (run == null) {
+            _state.update { it.copy(message = "לא היה מה לתקן") }
+            return
+        }
+        rescan()
+
+        // Check the result against the phone itself: a fresh scan should no
+        // longer find what was just fixed or deleted.
+        val chosenIds = chosen.map { it.id }.toSet()
+        val left = _state.value.report?.issues.orEmpty().count { it.id in chosenIds }
+        val done = chosenIds.size - left
+        val verification = if (left == 0) "אומתו כל $done השינויים בסריקה חוזרת"
+        else "אומתו $done מתוך ${chosenIds.size}. $left עדיין מופיעים ברשימה ולא השתנו"
+        withContext(Dispatchers.IO) { changeLog.update(run.copy(verification = verification)) }
+        _state.update { it.copy(message = verification) }
         reloadLog()
         reloadArchive()
-        rescan()
     }
 
     fun undo(run: ChangeRun) = work("מבטל…") {

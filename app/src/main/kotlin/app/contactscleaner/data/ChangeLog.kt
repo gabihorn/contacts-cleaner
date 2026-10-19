@@ -19,6 +19,8 @@ data class ChangeRun(
     val undone: Boolean = false,
     /** Raw contacts this run added; undo deletes them. */
     val created: List<Long> = emptyList(),
+    /** What a fresh scan found right after the run, e.g. "אומתו 12 מתוך 12". */
+    val verification: String? = null,
 )
 
 /** Keeps the latest runs in a JSON file in the app's private storage. */
@@ -34,6 +36,9 @@ class ChangeLog(context: Context) {
 
     @Synchronized
     fun add(run: ChangeRun) = save(listOf(run) + all())
+
+    @Synchronized
+    fun update(run: ChangeRun) = save(all().map { if (it.id == run.id) run else it })
 
     @Synchronized
     fun markUndone(id: Long) = save(all().map { if (it.id == id) it.copy(undone = true) else it })
@@ -57,6 +62,7 @@ class ChangeLog(context: Context) {
         .put("undone", run.undone)
         .put("before", JSONArray().apply { run.before.forEach { put(RawContactJson.toJson(it)) } })
         .put("created", JSONArray(run.created))
+        .put("verification", run.verification ?: JSONObject.NULL)
 
     private fun runFromJson(o: JSONObject) = ChangeRun(
         id = o.getLong("id"),
@@ -66,6 +72,7 @@ class ChangeLog(context: Context) {
         before = o.getJSONArray("before").let { a -> (0 until a.length()).map { RawContactJson.fromJson(a.getJSONObject(it)) } },
         undone = o.optBoolean("undone"),
         created = o.optJSONArray("created")?.let { a -> (0 until a.length()).map(a::getLong) }.orEmpty(),
+        verification = if (o.isNull("verification")) null else o.optString("verification"),
     )
 
     private companion object {

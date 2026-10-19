@@ -744,6 +744,9 @@ private fun LogScreen(state: UiState, vm: MainViewModel) {
                         )
                     }
                     Text("${run.lines.size} שינויים" + if (run.undone) " · בוטל" else "", style = MaterialTheme.typography.labelMedium)
+                    run.verification?.let {
+                        Text("✓ $it", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                    }
                     run.lines.take(MAX_LOG_LINES).forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
                     if (run.lines.size > MAX_LOG_LINES) {
                         Text("ועוד ${run.lines.size - MAX_LOG_LINES}…", style = MaterialTheme.typography.bodySmall)
