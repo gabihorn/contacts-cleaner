@@ -21,13 +21,24 @@ object Names {
         return key.takeIf { it.length >= 3 }
     }
 
+    // Stray marks at the start (".משה", ",Moshe", "- דוד"). Brackets are kept: "(עבודה)" is meaningful.
+    private val leadingJunk = Regex("^[\\s.,;:\\-_*~!?#/\\\\|+=`'\"׳״]+")
+
+    // At the end, quotes are kept (ג', בע"מ) and a single dot after a letter is
+    // kept too ("Jr."); only commas, dashes, spaced or repeated dots and the like go.
+    private val trailingJunk = Regex("(?:[\\s,;\\-_*~#/\\\\|+=`]|\\.{2,}|(?<=\\s)\\.)+$")
+
     /**
-     * A tidier spelling of [name], or null if it is already fine: trims and
-     * collapses spaces, and fixes all-lowercase / ALL-CAPS Latin names.
+     * A tidier spelling of [name], or null if it is already fine: removes
+     * stray punctuation at the start and end, trims and collapses spaces, and
+     * fixes all-lowercase / ALL-CAPS Latin names.
      */
     fun cleanup(name: String?): String? {
         if (name.isNullOrBlank()) return null
-        var fixed = spaces.replace(name.trim(), " ")
+        val stripped = trailingJunk.replace(leadingJunk.replace(name, ""), "")
+        // A "name" that is nothing but punctuation is left for the user to rename.
+        if (stripped.none { it.isLetterOrDigit() }) return null
+        var fixed = spaces.replace(stripped.trim(), " ")
         val letters = fixed.filter { it.isLetter() }
         val latinOnly = letters.isNotEmpty() && letters.all { it in 'a'..'z' || it in 'A'..'Z' }
         if (latinOnly && letters.length > 1 && (fixed == fixed.lowercase() || fixed == fixed.uppercase())) {

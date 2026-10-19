@@ -107,6 +107,29 @@ class ContactAnalyzerTest {
     }
 
     @Test
+    fun `stray punctuation at the start and end`() {
+        assertEquals("משה כהן", Names.cleanup(".משה כהן"))
+        assertEquals("משה כהן", Names.cleanup(",משה כהן"))
+        assertEquals("משה כהן", Names.cleanup("..  משה כהן"))
+        assertEquals("משה כהן", Names.cleanup("- משה כהן -"))
+        assertEquals("Moshe Cohen", Names.cleanup(".moshe cohen,"))
+        assertEquals("משה כהן", Names.cleanup("משה כהן..."))
+        assertEquals("משה כהן", Names.cleanup("משה כהן ."))
+        // Meaningful marks stay.
+        assertNull(Names.cleanup("Moshe Cohen Jr."))
+        assertNull(Names.cleanup("ישראלי בע\"מ"))
+        assertNull(Names.cleanup("אבי ג'"))
+        assertNull(Names.cleanup("משה (עבודה)"))
+        assertNull(Names.cleanup("..."))
+    }
+
+    @Test
+    fun `leading dot is reported as a name fix`() {
+        val c = contact(".משה כהן", phones = listOf("+972501234567"))
+        assertEquals("משה כהן", analyzer.analyze(listOf(c)).ofType<Issue.NameCleanup>().single().suggested)
+    }
+
+    @Test
     fun `empty contact`() {
         val c = contact("משה כהן")
         assertEquals(1, analyzer.analyze(listOf(c)).ofType<Issue.EmptyContact>().size)
