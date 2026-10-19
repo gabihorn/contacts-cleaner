@@ -14,6 +14,23 @@ sealed interface Issue {
         override val id get() = "format:${phone.dataId}"
     }
 
+    /**
+     * A 7-digit Israeli landline saved without its area code (5801234).
+     * [guess] is the likeliest code: one the same contact already uses, else
+     * the most common one in the address book. The user picks the final one.
+     */
+    data class MissingAreaCode(
+        val contact: Contact,
+        val phone: PhoneEntry,
+        val guess: String?,
+    ) : Issue {
+        override val id get() = "area:${phone.dataId}"
+
+        companion object {
+            val AREA_CODES = listOf("02", "03", "04", "08", "09")
+        }
+    }
+
     /** A number that isn't valid anywhere. Shown for review; there is no automatic fix. */
     data class InvalidPhone(
         val contact: Contact,

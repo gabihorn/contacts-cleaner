@@ -12,6 +12,8 @@ import app.contactscleaner.core.Issue
 import app.contactscleaner.core.PhoneFormat
 import app.contactscleaner.core.PhoneNormalizer
 import app.contactscleaner.data.Backup
+import app.contactscleaner.data.ChangeLog
+import app.contactscleaner.data.ChangeRun
 import app.contactscleaner.data.ContactsRepository
 import app.contactscleaner.data.ContactsWriter
 import kotlinx.coroutines.Dispatchers
@@ -22,24 +24,35 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
 
+sealed interface Screen {
+    data object Home : Screen
+    data class Review(val category: Category) : Screen
+    data object Log : Screen
+}
+
 data class UiState(
     val format: PhoneFormat = PhoneFormat.E164,
     /** Set while scanning/applying; the text says what is going on. */
     val busy: String? = null,
     val report: AnalysisReport? = null,
-    val open: Category? = null,
+    val screen: Screen = Screen.Home,
     val selected: Set<String> = emptySet(),
-    /** Names typed for [Issue.MissingName], by issue id. */
-    val names: Map<String, String> = emptyMap(),
+    /** What the user typed or picked per issue id: a name, or an area code. */
+    val inputs: Map<String, String> = emptyMap(),
+    val log: List<ChangeRun> = emptyList(),
     val message: String? = null,
 ) {
     fun issuesIn(category: Category) = report?.issues.orEmpty().filter { Category.of(it) == category }
+
+    /** Undo goes newest first, one run at a time. */
+    val undoableRunId: Long? get() = log.firstOrNull { !it.undone }?.id
 }
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = app.getSharedPreferences("settings", Context.MODE_PRIVATE)
     private val resolver = app.contentResolver
     private val region = detectRegion(app)
+    private val changeLog = ChangeLog(app)
 
     private val _state = MutableStateFlow(
         UiState(format = prefs.getString("format", null)?.let(PhoneFormat::valueOf) ?: PhoneFormat.E164)
@@ -47,6 +60,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val state: StateFlow<UiState> = _state
 
     private val normalizer get() = PhoneNormalizer(region, _state.value.format)
+
+    init {
+        viewModelScope.launch { reloadLog() }
+    }
 
     fun setFormat(format: PhoneFormat) {
         prefs.edit().putString("format", format.name).apply()
@@ -61,10 +78,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val report = withContext(Dispatchers.IO) {
             ContactAnalyzer(normalizer).analyze(ContactsRepository(resolver).loadAll())
         }
-        _state.update { it.copy(report = report, selected = defaultSelection(report), names = emptyMap()) }
+        _state.update { it.copy(report = report, selected = defaultSelection(report), inputs = emptyMap()) }
     }
 
-    fun open(category: Category?) = _state.update { it.copy(open = category) }
+    private suspend fun reloadLog() {
+        val runs = withContext(Dispatchers.IO) { changeLog.all() }
+        _state.update { it.copy(log = runs) }
+    }
+
+    fun show(screen: Screen) = _state.update { it.copy(screen = screen) }
 
     fun toggle(issueId: String) = _state.update {
         it.copy(selected = if (issueId in it.selected) it.selected - issueId else it.selected + issueId)
@@ -75,12 +97,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         s.copy(selected = if (selected) s.selected + ids else s.selected - ids.toSet())
     }
 
-    fun setName(issueId: String, name: String) = _state.update {
+    /** Records a typed name or picked area code; a non-empty value also selects the issue. */
+    fun setInput(issueId: String, value: String) = _state.update {
         it.copy(
-            names = it.names + (issueId to name),
-            selected = if (name.isBlank()) it.selected - issueId else it.selected + issueId,
+            inputs = it.inputs + (issueId to value),
+            selected = if (value.isBlank()) it.selected - issueId else it.selected + issueId,
         )
     }
+
+    /** What the number will become with [areaCode]; null if that isn't a valid number. */
+    fun preview(issue: Issue.MissingAreaCode, areaCode: String): String? =
+        normalizer.withAreaCode(issue.phone.number, areaCode)
 
     fun dismissMessage() = _state.update { it.copy(message = null) }
 
@@ -89,12 +116,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun applyNow(category: Category) {
         val s = _state.value
         val chosen = s.issuesIn(category).filter { it.id in s.selected }
-        val names = s.names + chosen.filterIsInstance<Issue.MissingName>()
-            .filter { it.id !in s.names && it.suggested != null }
-            .associate { it.id to it.suggested!! }
         val normalizer = normalizer
-        val fixed = withContext(Dispatchers.IO) { ContactsWriter(resolver, normalizer).apply(chosen, names) }
-        _state.update { it.copy(message = "בוצעו $fixed תיקונים") }
+        val run = withContext(Dispatchers.IO) {
+            ContactsWriter(resolver, normalizer).apply(category.title, chosen, s.inputs)
+                ?.also(changeLog::add)
+        }
+        _state.update { it.copy(message = if (run == null) "לא היה מה לתקן" else "בוצעו ${run.lines.size} תיקונים") }
+        reloadLog()
+        rescan()
+    }
+
+    fun undo(run: ChangeRun) = work("מבטל…") {
+        withContext(Dispatchers.IO) {
+            ContactsWriter(resolver, normalizer).undo(run)
+            changeLog.markUndone(run.id)
+        }
+        _state.update { it.copy(message = "השינויים של \"${run.title}\" בוטלו") }
+        reloadLog()
         rescan()
     }
 
@@ -124,14 +162,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * Preselect only what is safe to apply without a second look: confident
-     * duplicates, formatting, and names we could guess. Deleting empty
-     * contacts always needs an explicit tick.
+     * duplicates, formatting, and names or area codes we could guess.
+     * Deleting empty contacts always needs an explicit tick.
      */
     private fun defaultSelection(report: AnalysisReport): Set<String> = report.issues.filter {
         when (it) {
             is Issue.Duplicates -> it.confident
             is Issue.PhoneFormat, is Issue.RepeatedEntries, is Issue.NameCleanup -> true
             is Issue.MissingName -> it.suggested != null
+            is Issue.MissingAreaCode -> it.guess != null
             is Issue.EmptyContact, is Issue.InvalidPhone -> false
         }
     }.map { it.id }.toSet()

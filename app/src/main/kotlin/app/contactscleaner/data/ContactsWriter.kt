@@ -3,52 +3,178 @@ package app.contactscleaner.data
 import android.content.ContentProviderOperation
 import android.content.ContentResolver
 import android.content.ContentUris
+import android.content.ContentValues
 import android.provider.ContactsContract
 import android.provider.ContactsContract.AggregationExceptions
 import android.provider.ContactsContract.CommonDataKinds.Phone
 import android.provider.ContactsContract.CommonDataKinds.StructuredName
-import android.provider.ContactsContract.Contacts
 import android.provider.ContactsContract.Data
+import android.provider.ContactsContract.RawContacts
 import app.contactscleaner.core.Contact
+import app.contactscleaner.core.DataRow
 import app.contactscleaner.core.Issue
+import app.contactscleaner.core.MergePlanner
+import app.contactscleaner.core.MimeTypes
 import app.contactscleaner.core.PhoneNormalizer
 import app.contactscleaner.core.PhoneResult
+import app.contactscleaner.core.RawContact
 
-/** Writes the fixes the user approved back to the address book. */
+/** Writes the fixes the user approved back to the address book, and undoes them. */
 class ContactsWriter(
     private val resolver: ContentResolver,
     private val normalizer: PhoneNormalizer,
+    private val repository: ContactsRepository = ContactsRepository(resolver),
 ) {
     /**
-     * Applies [issues]. [names] holds the name the user typed for each
-     * [Issue.MissingName], keyed by issue id. Returns how many issues were fixed.
+     * Applies [issues] and returns the run to record in the change log, or
+     * null if there was nothing to do. [inputs] holds what the user typed or
+     * picked, keyed by issue id: the name for [Issue.MissingName], the area
+     * code for [Issue.MissingAreaCode].
      */
-    fun apply(issues: List<Issue>, names: Map<String, String>): Int {
+    fun apply(title: String, issues: List<Issue>, inputs: Map<String, String>): ChangeRun? {
+        // Snapshot everything we may touch before touching anything.
+        val before = repository.loadRaw(issues.flatMap { touchedContacts(it) }.flatMap { it.rawContactIds })
+        val rawById = before.associateBy { it.id }
+
         val ops = ArrayList<ContentProviderOperation>()
-        var fixed = 0
+        val lines = mutableListOf<String>()
 
         for (issue in issues) {
-            val before = ops.size
+            val opsBefore = ops.size
+            var line: String? = null
             when (issue) {
-                is Issue.PhoneFormat -> ops += updatePhone(issue.phone.dataId, issue.suggested)
-                is Issue.RepeatedEntries -> issue.dataIdsToRemove.forEach { ops += deleteData(it) }
-                is Issue.NameCleanup -> ops += updateName(issue.name.dataId, issue.suggested)
-                is Issue.MissingName -> {
-                    val name = names[issue.id]?.trim().orEmpty()
-                    if (name.isNotEmpty()) ops += setName(issue.contact, name)
+                is Issue.PhoneFormat -> {
+                    ops += updatePhone(issue.phone.dataId, issue.suggested)
+                    line = "${issue.contact.title}: ${ltr(issue.phone.number)} ← ${ltr(issue.suggested)}"
                 }
-                is Issue.EmptyContact -> ops += ContentProviderOperation
-                    .newDelete(ContentUris.withAppendedId(Contacts.CONTENT_URI, issue.contact.id))
-                    .build()
-                is Issue.Duplicates -> ops += join(issue.contacts)
+                is Issue.MissingAreaCode -> {
+                    val area = inputs[issue.id] ?: issue.guess
+                    val fixed = area?.let { normalizer.withAreaCode(issue.phone.number, it) }
+                    if (fixed != null) {
+                        ops += updatePhone(issue.phone.dataId, fixed)
+                        line = "${issue.contact.title}: ${ltr(issue.phone.number)} ← ${ltr(fixed)}"
+                    }
+                }
+                is Issue.RepeatedEntries -> {
+                    issue.dataIdsToRemove.forEach { ops += deleteData(it) }
+                    val removed = issue.repeatedPhones.map { it.number } + issue.repeatedEmails.map { it.address }
+                    line = "${issue.contact.title}: נמחקו עותקים של ${removed.joinToString(", ") { ltr(it) }}"
+                }
+                is Issue.NameCleanup -> {
+                    ops += updateName(issue.name.dataId, issue.suggested)
+                    line = "\"${issue.name.displayName}\" ← \"${issue.suggested}\""
+                }
+                is Issue.MissingName -> {
+                    val name = (inputs[issue.id] ?: issue.suggested)?.trim().orEmpty()
+                    if (name.isNotEmpty()) {
+                        ops += setName(issue.contact, name)
+                        line = "${issue.contact.title} ← \"$name\""
+                    }
+                }
+                is Issue.EmptyContact -> {
+                    issue.contact.rawContactIds.forEach { ops += deleteRaw(it) }
+                    line = "נמחק: ${issue.contact.title}"
+                }
+                is Issue.Duplicates -> {
+                    val raws = issue.contacts.flatMap { it.rawContactIds }.mapNotNull { rawById[it] }
+                    if (raws.size >= 2) {
+                        ops += merge(raws, issue.merged.name)
+                        line = "אוחדו: ${issue.contacts.joinToString(" + ") { it.title }}"
+                    }
+                }
                 is Issue.InvalidPhone -> Unit // Nothing to apply; shown for review only.
             }
-            if (ops.size > before) fixed++
+            if (ops.size > opsBefore && line != null) lines += line
+        }
+        if (ops.isEmpty()) return null
+
+        applyInBatches(ops)
+        val now = System.currentTimeMillis()
+        return ChangeRun(id = now, time = now, title = title, lines = lines, before = before)
+    }
+
+    /**
+     * Puts every raw contact in [run] back the way it was: ones that still
+     * exist get their data rows replaced, deleted ones are recreated in the
+     * same account. Changes made to those contacts since the run are lost.
+     */
+    fun undo(run: ChangeRun) {
+        val stillThere = repository.loadRaw(run.before.map { it.id }).map { it.id }.toSet()
+        val restoredIds = mutableMapOf<Long, Long>() // new raw id -> original contact id
+
+        for (raw in run.before) {
+            val ops = ArrayList<ContentProviderOperation>()
+            if (raw.id in stillThere) {
+                val mimeTypes = MimeTypes.STANDARD.toTypedArray()
+                ops += ContentProviderOperation.newDelete(Data.CONTENT_URI)
+                    .withSelection(
+                        "${Data.RAW_CONTACT_ID} = ? AND ${Data.MIMETYPE} IN (${mimeTypes.joinToString { "?" }})",
+                        arrayOf(raw.id.toString()) + mimeTypes,
+                    )
+                    .build()
+                raw.rows.forEach { ops += insertRow(it, rawContactId = raw.id) }
+                applyInBatches(ops)
+                restoredIds[raw.id] = raw.contactId
+            } else {
+                ops += ContentProviderOperation.newInsert(RawContacts.CONTENT_URI)
+                    .withValue(RawContacts.ACCOUNT_TYPE, raw.accountType)
+                    .withValue(RawContacts.ACCOUNT_NAME, raw.accountName)
+                    .withValue(RawContacts.DATA_SET, raw.dataSet)
+                    .build()
+                raw.rows.forEach { ops += insertRow(it, rawContactId = null) }
+                val results = resolver.applyBatch(ContactsContract.AUTHORITY, ops)
+                val newId = results.firstOrNull()?.uri?.let(ContentUris::parseId) ?: continue
+                restoredIds[newId] = raw.contactId
+            }
         }
 
-        // The provider caps a batch at a few hundred operations.
-        ops.chunked(300).forEach { resolver.applyBatch(ContactsContract.AUTHORITY, ArrayList(it)) }
-        return fixed
+        // They were separate contacts before; stop Android from re-joining them
+        // just because they share a number again.
+        val ids = restoredIds.keys.toList()
+        val separate = ArrayList<ContentProviderOperation>()
+        for (i in ids.indices) for (j in i + 1 until ids.size) {
+            if (restoredIds[ids[i]] != restoredIds[ids[j]]) separate += aggregation(ids[i], ids[j], AggregationExceptions.TYPE_KEEP_SEPARATE)
+        }
+        applyInBatches(separate)
+    }
+
+    private fun touchedContacts(issue: Issue): List<Contact> = when (issue) {
+        is Issue.Duplicates -> issue.contacts
+        is Issue.PhoneFormat -> listOf(issue.contact)
+        is Issue.MissingAreaCode -> listOf(issue.contact)
+        is Issue.RepeatedEntries -> listOf(issue.contact)
+        is Issue.NameCleanup -> listOf(issue.contact)
+        is Issue.MissingName -> listOf(issue.contact)
+        is Issue.EmptyContact -> listOf(issue.contact)
+        is Issue.InvalidPhone -> emptyList()
+    }
+
+    /**
+     * Folds the raw contacts into one: the survivor (a Google one when there
+     * is one, so the merge syncs) gets everything it lacks, the rest are deleted.
+     */
+    private fun merge(raws: List<RawContact>, name: String?): List<ContentProviderOperation> {
+        val plan = MergePlanner(normalizer).plan(raws, name)
+        val ops = mutableListOf<ContentProviderOperation>()
+        plan.rowsToCopy.forEach { ops += insertRow(it, plan.survivor.id) }
+        plan.newName?.let { newName ->
+            val nameRow = plan.survivor.rows.firstOrNull { it.mimeType == MimeTypes.NAME }
+            ops += if (nameRow != null) updateName(nameRow.id, newName) else insertName(plan.survivor.id, newName)
+        }
+        plan.toDelete.forEach { ops += deleteRaw(it.id) }
+        return ops
+    }
+
+    /** Inserts a copy of [row]; with a null [rawContactId] it attaches to the raw contact inserted first in the batch. */
+    private fun insertRow(row: DataRow, rawContactId: Long?): ContentProviderOperation {
+        val values = ContentValues()
+        row.values.forEach { (column, value) -> values.put(column, value) }
+        values.put(Data.MIMETYPE, row.mimeType)
+        row.blob?.let { values.put(Data.DATA15, it) }
+        val builder = ContentProviderOperation.newInsert(Data.CONTENT_URI).withValues(values)
+        if (rawContactId != null) builder.withValue(Data.RAW_CONTACT_ID, rawContactId)
+        else builder.withValueBackReference(Data.RAW_CONTACT_ID, 0)
+        return builder.build()
     }
 
     private fun updatePhone(dataId: Long, number: String): ContentProviderOperation {
@@ -73,36 +199,37 @@ class ContactsWriter(
             .withValue(StructuredName.SUFFIX, null)
             .build()
 
-    private fun setName(contact: Contact, displayName: String): ContentProviderOperation {
-        contact.name?.let { return updateName(it.dataId, displayName) }
-        return ContentProviderOperation.newInsert(Data.CONTENT_URI)
-            .withValue(Data.RAW_CONTACT_ID, contact.rawContactIds.first())
+    private fun insertName(rawContactId: Long, displayName: String): ContentProviderOperation =
+        ContentProviderOperation.newInsert(Data.CONTENT_URI)
+            .withValue(Data.RAW_CONTACT_ID, rawContactId)
             .withValue(Data.MIMETYPE, StructuredName.CONTENT_ITEM_TYPE)
             .withValue(StructuredName.DISPLAY_NAME, displayName)
             .build()
-    }
+
+    private fun setName(contact: Contact, displayName: String): ContentProviderOperation =
+        contact.name?.let { updateName(it.dataId, displayName) }
+            ?: insertName(contact.rawContactIds.first(), displayName)
 
     private fun deleteData(dataId: Long) = ContentProviderOperation.newDelete(dataUri(dataId)).build()
 
-    /**
-     * Joins the contacts the way the Contacts app's "merge" does: every raw
-     * contact is told to stay together with every other. Nothing is deleted,
-     * and the user can split them again from the Contacts app.
-     */
-    private fun join(contacts: List<Contact>): List<ContentProviderOperation> {
-        val raw = contacts.flatMap { it.rawContactIds }.distinct()
-        val ops = mutableListOf<ContentProviderOperation>()
-        for (i in raw.indices) {
-            for (j in i + 1 until raw.size) {
-                ops += ContentProviderOperation.newUpdate(AggregationExceptions.CONTENT_URI)
-                    .withValue(AggregationExceptions.TYPE, AggregationExceptions.TYPE_KEEP_TOGETHER)
-                    .withValue(AggregationExceptions.RAW_CONTACT_ID1, raw[i])
-                    .withValue(AggregationExceptions.RAW_CONTACT_ID2, raw[j])
-                    .build()
-            }
-        }
-        return ops
+    /** For synced accounts this marks the contact deleted and the deletion syncs to Google. */
+    private fun deleteRaw(rawContactId: Long) =
+        ContentProviderOperation.newDelete(ContentUris.withAppendedId(RawContacts.CONTENT_URI, rawContactId)).build()
+
+    private fun aggregation(raw1: Long, raw2: Long, type: Int) =
+        ContentProviderOperation.newUpdate(AggregationExceptions.CONTENT_URI)
+            .withValue(AggregationExceptions.TYPE, type)
+            .withValue(AggregationExceptions.RAW_CONTACT_ID1, raw1)
+            .withValue(AggregationExceptions.RAW_CONTACT_ID2, raw2)
+            .build()
+
+    /** The provider caps a batch at a few hundred operations. */
+    private fun applyInBatches(ops: List<ContentProviderOperation>) {
+        ops.chunked(300).forEach { resolver.applyBatch(ContactsContract.AUTHORITY, ArrayList(it)) }
     }
 
     private fun dataUri(dataId: Long) = ContentUris.withAppendedId(Data.CONTENT_URI, dataId)
+
+    /** Keeps numbers left-to-right inside Hebrew text. */
+    private fun ltr(text: String) = "⁦$text⁩"
 }

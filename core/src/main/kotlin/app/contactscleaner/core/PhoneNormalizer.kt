@@ -68,6 +68,28 @@ class PhoneNormalizer(
         return PhoneResult.Valid(formatted, e164, util.getRegionCodeForNumber(parsed))
     }
 
+    /**
+     * For Israel only: the area code ("02") a landline uses, or null if [raw]
+     * isn't an Israeli landline.
+     */
+    fun israeliAreaCode(raw: String): String? {
+        val key = (normalize(raw) as? PhoneResult.Valid)?.key ?: return null
+        // +972 + area digit + 7 digits; 5x and 7x are mobile/VoIP, not areas.
+        if (!key.startsWith("+972") || key.length != 12) return null
+        return "0${key[4]}".takeIf { it in Issue.MissingAreaCode.AREA_CODES }
+    }
+
+    /** True for a bare 7-digit local landline number, like 5801234 or 580-1234. */
+    fun lacksIsraeliAreaCode(raw: String): Boolean {
+        if (defaultRegion != "IL" || raw.trim().startsWith("+")) return false
+        val digits = raw.filter { it.isDigit() }
+        return digits.length == 7 && digits[0] in '2'..'9' && raw.none { it == '*' || it == '#' }
+    }
+
+    /** [raw] with [areaCode] in front, formatted; null if that still isn't a valid number. */
+    fun withAreaCode(raw: String, areaCode: String): String? =
+        (normalize(areaCode + raw.filter { it.isDigit() }) as? PhoneResult.Valid)?.formatted
+
     /** Comparison key: E.164 when valid, the bare digits otherwise. */
     fun key(raw: String): String = when (val r = normalize(raw)) {
         is PhoneResult.Valid -> r.key

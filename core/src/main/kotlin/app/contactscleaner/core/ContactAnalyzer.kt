@@ -6,14 +6,19 @@ class ContactAnalyzer(
 ) {
     fun analyze(contacts: List<Contact>): AnalysisReport {
         val issues = mutableListOf<Issue>()
+        val commonAreaCode = contacts.asSequence()
+            .flatMap { it.phones }
+            .mapNotNull { normalizer.israeliAreaCode(it.number) }
+            .groupingBy { it }.eachCount()
+            .maxByOrNull { it.value }?.key
         for (contact in contacts) {
-            issues += perContactIssues(contact)
+            issues += perContactIssues(contact, commonAreaCode)
         }
         issues += findDuplicates(contacts)
         return AnalysisReport(contacts.size, issues)
     }
 
-    private fun perContactIssues(contact: Contact): List<Issue> {
+    private fun perContactIssues(contact: Contact, commonAreaCode: String?): List<Issue> {
         val issues = mutableListOf<Issue>()
 
         // Repeated phones: keep the copy already in canonical form if there is one.
@@ -37,7 +42,12 @@ class ContactAnalyzer(
                 is PhoneResult.Valid -> if (r.formatted != phone.number) {
                     issues += Issue.PhoneFormat(contact, phone, r.formatted)
                 }
-                is PhoneResult.Invalid -> issues += Issue.InvalidPhone(contact, phone)
+                is PhoneResult.Invalid -> issues += if (normalizer.lacksIsraeliAreaCode(phone.number)) {
+                    val ownAreaCode = contact.phones.firstNotNullOfOrNull { normalizer.israeliAreaCode(it.number) }
+                    Issue.MissingAreaCode(contact, phone, ownAreaCode ?: commonAreaCode)
+                } else {
+                    Issue.InvalidPhone(contact, phone)
+                }
                 is PhoneResult.Special -> Unit
             }
         }

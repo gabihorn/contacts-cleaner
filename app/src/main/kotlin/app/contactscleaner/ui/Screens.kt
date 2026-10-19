@@ -57,7 +57,11 @@ import app.contactscleaner.core.Contact
 import app.contactscleaner.core.DuplicateReason
 import app.contactscleaner.core.Issue
 import app.contactscleaner.core.PhoneFormat
+import app.contactscleaner.data.ChangeRun
+import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 /** Keeps numbers and emails left-to-right inside Hebrew text. */
 private fun ltr(text: String) = "⁦$text⁩"
@@ -74,15 +78,23 @@ fun App(vm: MainViewModel) {
             vm.dismissMessage()
         }
     }
-    BackHandler(enabled = state.open != null) { vm.open(null) }
+    BackHandler(enabled = state.screen != Screen.Home) { vm.show(Screen.Home) }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(state.open?.title ?: "מסדר אנשי קשר") },
+                title = {
+                    Text(
+                        when (val screen = state.screen) {
+                            Screen.Home -> "מסדר אנשי קשר"
+                            is Screen.Review -> screen.category.title
+                            Screen.Log -> "יומן שינויים"
+                        }
+                    )
+                },
                 navigationIcon = {
-                    if (state.open != null) {
-                        IconButton(onClick = { vm.open(null) }) {
+                    if (state.screen != Screen.Home) {
+                        IconButton(onClick = { vm.show(Screen.Home) }) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "חזרה")
                         }
                     }
@@ -96,8 +108,11 @@ fun App(vm: MainViewModel) {
                 LinearProgressIndicator(Modifier.fillMaxWidth())
                 Text(label, Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
             }
-            val open = state.open
-            if (open == null) HomeScreen(state, vm) else CategoryScreen(open, state, vm)
+            when (val screen = state.screen) {
+                Screen.Home -> HomeScreen(state, vm)
+                is Screen.Review -> CategoryScreen(screen.category, state, vm)
+                Screen.Log -> LogScreen(state, vm)
+            }
         }
     }
 }
@@ -162,6 +177,12 @@ private fun HomeScreen(state: UiState, vm: MainViewModel) {
         }
 
         item {
+            OutlinedButton(onClick = { vm.show(Screen.Log) }) {
+                Text(if (state.log.isEmpty()) "יומן שינויים" else "יומן שינויים (${state.log.size})")
+            }
+        }
+
+        item {
             Column {
                 Text("פורמט מספרים", style = MaterialTheme.typography.labelLarge)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -190,7 +211,7 @@ private fun HomeScreen(state: UiState, vm: MainViewModel) {
         items(Category.entries.filter { state.issuesIn(it).isNotEmpty() }) { category ->
             val issues = state.issuesIn(category)
             val chosen = issues.count { it.id in state.selected }
-            Card(Modifier.fillMaxWidth().clickable { vm.open(category) }) {
+            Card(Modifier.fillMaxWidth().clickable { vm.show(Screen.Review(category)) }) {
                 Column(Modifier.padding(16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(category.title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
@@ -246,7 +267,9 @@ private fun CategoryScreen(category: Category, state: UiState, vm: MainViewModel
         AlertDialog(
             onDismissRequest = { confirming = false },
             title = { Text("לבצע $chosen תיקונים?") },
-            text = { Text("השינויים ייכתבו לאנשי הקשר בטלפון. מומלץ לשמור גיבוי לפני כן.") },
+            text = {
+                Text("השינויים ייכתבו לאנשי הקשר ויסונכרנו לחשבון גוגל. אפשר לבטל אותם מיומן השינויים, ובכל זאת מומלץ לשמור גם גיבוי.")
+            },
             confirmButton = {
                 Button(onClick = {
                     confirming = false
@@ -295,6 +318,25 @@ private fun IssueBody(issue: Issue, state: UiState, vm: MainViewModel) {
             Text("לפני: ${ltr(issue.phone.number)}", style = small)
             Text("אחרי: ${ltr(issue.suggested)}", fontWeight = FontWeight.Medium)
         }
+        is Issue.MissingAreaCode -> {
+            Title(issue.contact.title)
+            Text(ltr(issue.phone.number), style = small)
+            val area = state.inputs[issue.id] ?: issue.guess
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Issue.MissingAreaCode.AREA_CODES.forEach { code ->
+                    FilterChip(
+                        selected = code == area,
+                        onClick = { vm.setInput(issue.id, code) },
+                        label = { Text(code) },
+                    )
+                }
+            }
+            if (area == null) {
+                Text("בחר קידומת", style = small, color = MaterialTheme.colorScheme.error)
+            } else {
+                vm.preview(issue, area)?.let { Text("אחרי: ${ltr(it)}", fontWeight = FontWeight.Medium) }
+            }
+        }
         is Issue.InvalidPhone -> {
             Title(issue.contact.title)
             Text(ltr(issue.phone.number))
@@ -311,8 +353,8 @@ private fun IssueBody(issue: Issue, state: UiState, vm: MainViewModel) {
         is Issue.MissingName -> {
             ContactDetails(issue.contact)
             OutlinedTextField(
-                value = state.names[issue.id] ?: issue.suggested.orEmpty(),
-                onValueChange = { vm.setName(issue.id, it) },
+                value = state.inputs[issue.id] ?: issue.suggested.orEmpty(),
+                onValueChange = { vm.setInput(issue.id, it) },
                 label = { Text("שם") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
@@ -354,3 +396,57 @@ private fun ContactDetails(contact: Contact) {
         }
     }
 }
+
+@Composable
+private fun LogScreen(state: UiState, vm: MainViewModel) {
+    var confirming by remember { mutableStateOf<ChangeRun?>(null) }
+    val timeFormat = remember { DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm") }
+
+    if (state.log.isEmpty()) {
+        Text("עוד לא בוצעו תיקונים.", Modifier.padding(16.dp))
+        return
+    }
+    LazyColumn(
+        contentPadding = PaddingValues(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        items(state.log, key = { it.id }) { run ->
+            Card {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(run.title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                        Text(
+                            Instant.ofEpochMilli(run.time).atZone(ZoneId.systemDefault()).format(timeFormat),
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                    Text("${run.lines.size} שינויים" + if (run.undone) " · בוטל" else "", style = MaterialTheme.typography.labelMedium)
+                    run.lines.take(MAX_LOG_LINES).forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
+                    if (run.lines.size > MAX_LOG_LINES) {
+                        Text("ועוד ${run.lines.size - MAX_LOG_LINES}…", style = MaterialTheme.typography.bodySmall)
+                    }
+                    if (run.id == state.undoableRunId) {
+                        OutlinedButton(onClick = { confirming = run }, enabled = state.busy == null) { Text("ביטול השינויים") }
+                    }
+                }
+            }
+        }
+    }
+
+    confirming?.let { run ->
+        AlertDialog(
+            onDismissRequest = { confirming = null },
+            title = { Text("לבטל את \"${run.title}\"?") },
+            text = { Text("אנשי הקשר שהשתנו יחזרו בדיוק למצב שלפני. אם ערכת אותם ידנית מאז, גם העריכה הזו תתבטל.") },
+            confirmButton = {
+                Button(onClick = {
+                    confirming = null
+                    vm.undo(run)
+                }) { Text("ביטול השינויים") }
+            },
+            dismissButton = { TextButton(onClick = { confirming = null }) { Text("חזרה") } },
+        )
+    }
+}
+
+private const val MAX_LOG_LINES = 8
