@@ -58,10 +58,12 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.contactscleaner.core.Contact
 import app.contactscleaner.core.DuplicateReason
+import app.contactscleaner.core.IdleFilter
 import app.contactscleaner.core.Issue
 import app.contactscleaner.core.Names
 import app.contactscleaner.core.OutdatedReason
 import app.contactscleaner.core.PhoneFormat
+import app.contactscleaner.core.WhatsAppFilter
 import app.contactscleaner.data.Action
 import app.contactscleaner.data.ChangeRun
 import java.time.Instant
@@ -85,6 +87,11 @@ fun App(vm: MainViewModel) {
         }
     }
     BackHandler(enabled = state.screen != Screen.Home) { vm.show(Screen.Home) }
+
+    val context = LocalContext.current
+    LaunchedEffect(Unit) {
+        vm.setCallLogGranted(context.checkSelfPermission(Manifest.permission.READ_CALL_LOG) == PackageManager.PERMISSION_GRANTED)
+    }
 
     Scaffold(
         topBar = {
@@ -224,7 +231,7 @@ private fun HomeScreen(state: UiState, vm: MainViewModel) {
                         Text("${issues.size}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     }
                     Text(category.description, style = MaterialTheme.typography.bodySmall)
-                    if (category.fixable || category.deletesNumbers) {
+                    if (category.fixable || category.deletesNumbers || category.deletesContacts) {
                         Text("$chosen מסומנים", style = MaterialTheme.typography.labelMedium)
                     }
                 }
@@ -237,7 +244,7 @@ private fun HomeScreen(state: UiState, vm: MainViewModel) {
 private fun CategoryScreen(category: Category, state: UiState, vm: MainViewModel) {
     val issues = state.issuesIn(category)
     val chosen = issues.count { it.id in state.selected }
-    val selectable = category.fixable || category.deletesNumbers
+    val selectable = category.fixable || category.deletesNumbers || category.deletesContacts
     var confirming by remember { mutableStateOf<Action?>(null) }
     // Which action the backup-then-apply flow continues with once a file is picked.
     var afterBackup by remember { mutableStateOf(Action.FIX) }
@@ -245,6 +252,7 @@ private fun CategoryScreen(category: Category, state: UiState, vm: MainViewModel
 
     Column(Modifier.fillMaxSize()) {
         Text(category.description, Modifier.padding(16.dp), style = MaterialTheme.typography.bodyMedium)
+        if (category == Category.INACTIVE) InactiveFilterPanel(state, vm)
         if (selectable) {
             Row(Modifier.padding(horizontal = 8.dp)) {
                 TextButton(onClick = { vm.setAll(category, true) }) { Text("סמן הכל") }
@@ -283,6 +291,14 @@ private fun CategoryScreen(category: Category, state: UiState, vm: MainViewModel
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
                         ) { Text("מחיקת $chosen מספרים") }
                     }
+                    if (category.deletesContacts) {
+                        OutlinedButton(
+                            onClick = { confirming = Action.DELETE_CONTACTS },
+                            enabled = enabled,
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                        ) { Text("מחיקת $chosen אנשי קשר") }
+                    }
                 }
             }
         }
@@ -292,11 +308,22 @@ private fun CategoryScreen(category: Category, state: UiState, vm: MainViewModel
         val fix = action == Action.FIX
         AlertDialog(
             onDismissRequest = { confirming = null },
-            title = { Text(if (fix) "לבצע $chosen תיקונים?" else "למחוק $chosen מספרים?") },
+            title = {
+                Text(
+                    when (action) {
+                        Action.FIX -> "לבצע $chosen תיקונים?"
+                        Action.DELETE_NUMBERS -> "למחוק $chosen מספרים?"
+                        Action.DELETE_CONTACTS -> "למחוק $chosen אנשי קשר?"
+                    }
+                )
+            },
             text = {
                 Text(
-                    (if (fix) "השינויים ייכתבו לאנשי הקשר" else "המספרים יימחקו מאנשי הקשר") +
-                        " ויסונכרנו לחשבון גוגל. אפשר לבטל מיומן השינויים, ובכל זאת מומלץ לשמור גם גיבוי."
+                    when (action) {
+                        Action.FIX -> "השינויים ייכתבו לאנשי הקשר"
+                        Action.DELETE_NUMBERS -> "המספרים יימחקו מאנשי הקשר"
+                        Action.DELETE_CONTACTS -> "אנשי הקשר יימחקו"
+                    } + " ויסונכרנו לחשבון גוגל. אפשר לבטל מיומן השינויים, ובכל זאת מומלץ לשמור גם גיבוי."
                 )
             },
             confirmButton = {
@@ -318,6 +345,64 @@ private fun CategoryScreen(category: Category, state: UiState, vm: MainViewModel
         )
     }
 }
+
+/** Filters for the "inactive contacts" screen, plus asking for the call log when it's missing. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun InactiveFilterPanel(state: UiState, vm: MainViewModel) {
+    val filter = state.inactiveFilter
+    val callLogLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        vm.setCallLogGranted(it)
+    }
+    Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("וואטסאפ", style = MaterialTheme.typography.labelLarge)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(
+                WhatsAppFilter.ON_WHATSAPP to "יש וואטסאפ",
+                WhatsAppFilter.NOT_ON_WHATSAPP to "אין וואטסאפ",
+                WhatsAppFilter.ANY to "הכל",
+            ).forEach { (value, label) ->
+                FilterChip(
+                    selected = filter.whatsApp == value,
+                    onClick = { vm.setInactiveFilter(filter.copy(whatsApp = value)) },
+                    label = { Text(label) },
+                )
+            }
+        }
+        Text("שיחת טלפון אחרונה", style = MaterialTheme.typography.labelLarge)
+        if (state.callLogGranted) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf(
+                    IdleFilter.NEVER to "אף פעם",
+                    IdleFilter.YEAR to "לפני שנה+",
+                    IdleFilter.TWO_YEARS to "שנתיים+",
+                    IdleFilter.THREE_YEARS to "3 שנים+",
+                    IdleFilter.ANY to "הכל",
+                ).forEach { (value, label) ->
+                    FilterChip(
+                        selected = filter.idle == value,
+                        onClick = { vm.setInactiveFilter(filter.copy(idle = value)) },
+                        label = { Text(label) },
+                    )
+                }
+            }
+            Text(
+                "יומן השיחות בטלפון שומר רק תקופה מוגבלת (לרוב כמה מאות שיחות אחרונות), אז \"אף פעם\" יכול לכלול מי שדיברת איתו מזמן.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        } else {
+            Text(
+                "כדי לסנן לפי שיחה אחרונה צריך הרשאה לקרוא את יומן השיחות. הוא נקרא רק בטלפון, לא נשלח לשום מקום.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            OutlinedButton(onClick = { callLogLauncher.launch(Manifest.permission.READ_CALL_LOG) }) {
+                Text("מתן הרשאה ליומן שיחות")
+            }
+        }
+    }
+}
+
+private val DATE = DateTimeFormatter.ofPattern("dd/MM/yyyy")
 
 @Composable
 private fun IssueCard(issue: Issue, state: UiState, vm: MainViewModel, selectable: Boolean) {
@@ -403,6 +488,18 @@ private fun IssueBody(issue: Issue, state: UiState, vm: MainViewModel) {
             )
         }
         is Issue.EmptyContact -> Title(issue.contact.title)
+        is Issue.Inactive -> {
+            ContactDetails(issue.contact)
+            val lastCall = when {
+                !state.callLogGranted -> "לא ידוע (אין הרשאה ליומן שיחות)"
+                issue.lastCall == null -> "אף פעם"
+                else -> Instant.ofEpochMilli(issue.lastCall).atZone(ZoneId.systemDefault()).format(DATE)
+            }
+            Text(
+                (if (issue.onWhatsApp) "יש וואטסאפ" else "אין וואטסאפ") + " · שיחה אחרונה: $lastCall",
+                style = small,
+            )
+        }
         is Issue.Duplicates -> {
             Text(
                 issue.reasons.joinToString(" · ") { reason ->

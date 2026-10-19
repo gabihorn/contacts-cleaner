@@ -14,6 +14,10 @@ data class Contact(
     val emails: List<EmailEntry> = emptyList(),
     val organization: String? = null,
     val rawContactIds: List<Long> = emptyList(),
+    /** WhatsApp keeps its own copy of every contact that is on WhatsApp; this says whether it has one. */
+    val onWhatsApp: Boolean = false,
+    /** Time (epoch ms) of the latest phone call with any of this contact's numbers; null if none in the call log. */
+    val lastCall: Long? = null,
 ) {
     val displayName: String? get() = name?.displayName?.takeIf { it.isNotBlank() }
 

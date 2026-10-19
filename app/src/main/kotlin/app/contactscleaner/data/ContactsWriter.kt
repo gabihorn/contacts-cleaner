@@ -26,6 +26,9 @@ enum class Action {
 
     /** Delete the phone number each issue is about, instead of fixing it. */
     DELETE_NUMBERS,
+
+    /** Delete the contact each issue is about. */
+    DELETE_CONTACTS,
 }
 
 /** Writes the fixes the user approved back to the address book, and undoes them. */
@@ -51,6 +54,12 @@ class ContactsWriter(
         for (issue in issues) {
             val opsBefore = ops.size
             var line: String? = null
+            if (action == Action.DELETE_CONTACTS) {
+                val contact = issue.contactOrNull() ?: continue
+                contact.rawContactIds.forEach { ops += deleteRaw(it) }
+                lines += "נמחק: ${contact.title}"
+                continue
+            }
             if (action == Action.DELETE_NUMBERS) {
                 val phone = phoneOf(issue) ?: continue
                 ops += deleteData(phone.dataId)
@@ -100,6 +109,8 @@ class ContactsWriter(
                 }
                 // Nothing to fix; these can only be deleted (Action.DELETE_NUMBERS).
                 is Issue.OutdatedPhone, is Issue.InvalidPhone -> Unit
+                // Nothing to fix either; only Action.DELETE_CONTACTS applies.
+                is Issue.Inactive -> Unit
             }
             if (ops.size > opsBefore && line != null) lines += line
         }
@@ -163,6 +174,7 @@ class ContactsWriter(
         is Issue.NameCleanup -> listOf(issue.contact)
         is Issue.MissingName -> listOf(issue.contact)
         is Issue.EmptyContact -> listOf(issue.contact)
+        is Issue.Inactive -> listOf(issue.contact)
         is Issue.OutdatedPhone -> listOf(issue.contact)
         is Issue.InvalidPhone -> listOf(issue.contact)
     }

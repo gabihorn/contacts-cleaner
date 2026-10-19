@@ -4,7 +4,11 @@ package app.contactscleaner.core
 class ContactAnalyzer(
     private val normalizer: PhoneNormalizer = PhoneNormalizer(),
 ) {
-    fun analyze(contacts: List<Contact>): AnalysisReport {
+    /**
+     * [withActivity] adds an [Issue.Inactive] per contact with a phone number,
+     * for when WhatsApp presence and the call log were read.
+     */
+    fun analyze(contacts: List<Contact>, withActivity: Boolean = false): AnalysisReport {
         val issues = mutableListOf<Issue>()
         val commonAreaCode = contacts.asSequence()
             .flatMap { it.phones }
@@ -15,6 +19,9 @@ class ContactAnalyzer(
             issues += perContactIssues(contact, commonAreaCode)
         }
         issues += findDuplicates(contacts)
+        if (withActivity) {
+            issues += contacts.filter { it.phones.isNotEmpty() }.map { Issue.Inactive(it, it.onWhatsApp, it.lastCall) }
+        }
         return AnalysisReport(contacts.size, issues)
     }
 

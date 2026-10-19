@@ -1,6 +1,7 @@
 package app.contactscleaner.data
 
 import android.content.ContentResolver
+import android.provider.CallLog
 import android.provider.ContactsContract
 import android.provider.ContactsContract.CommonDataKinds.Email
 import android.provider.ContactsContract.CommonDataKinds.Organization
@@ -14,6 +15,7 @@ import app.contactscleaner.core.EmailEntry
 import app.contactscleaner.core.MimeTypes
 import app.contactscleaner.core.NameEntry
 import app.contactscleaner.core.PhoneEntry
+import app.contactscleaner.core.PhoneNormalizer
 import app.contactscleaner.core.RawContact
 
 /** Reads the phone's address book into [Contact]s. */
@@ -40,6 +42,10 @@ class ContactsRepository(private val resolver: ContentResolver) {
         val rawContactIds = linkedSetOf<Long>()
 
         fun build() = Contact(id, name, phones, emails, organization, rawContactIds.toList())
+    }
+
+    private companion object {
+        val WHATSAPP_ACCOUNT_TYPES = listOf("com.whatsapp", "com.whatsapp.w4b")
     }
 
     fun loadAll(): List<Contact> {
@@ -90,6 +96,45 @@ class ContactsRepository(private val resolver: ContentResolver) {
             }
         }
         return contacts.values.map { it.build() }
+    }
+
+    /**
+     * Fills in [Contact.onWhatsApp] and, if [readCallLog], [Contact.lastCall].
+     * Both come from the phone itself; nothing goes online.
+     */
+    fun withActivity(contacts: List<Contact>, normalizer: PhoneNormalizer, readCallLog: Boolean): List<Contact> {
+        val onWhatsApp = HashSet<Long>()
+        val types = WHATSAPP_ACCOUNT_TYPES.toTypedArray()
+        resolver.query(
+            RawContacts.CONTENT_URI,
+            arrayOf(RawContacts.CONTACT_ID),
+            "${RawContacts.ACCOUNT_TYPE} IN (${types.joinToString { "?" }}) AND ${RawContacts.DELETED} = 0",
+            types,
+            null,
+        )?.use { c -> while (c.moveToNext()) onWhatsApp += c.getLong(0) }
+
+        // Latest call per number, keyed like the contacts' numbers so 050… and +97250… meet.
+        val lastCallByKey = HashMap<String, Long>()
+        if (readCallLog) {
+            runCatching {
+                resolver.query(CallLog.Calls.CONTENT_URI, arrayOf(CallLog.Calls.NUMBER, CallLog.Calls.DATE), null, null, null)
+                    ?.use { c ->
+                        while (c.moveToNext()) {
+                            val number = c.getString(0)?.takeIf { it.isNotBlank() } ?: continue
+                            val key = normalizer.key(number)
+                            val date = c.getLong(1)
+                            if (date > (lastCallByKey[key] ?: 0L)) lastCallByKey[key] = date
+                        }
+                    }
+            }
+        }
+
+        return contacts.map { contact ->
+            contact.copy(
+                onWhatsApp = contact.id in onWhatsApp,
+                lastCall = contact.phones.mapNotNull { lastCallByKey[normalizer.key(it.number)] }.maxOrNull(),
+            )
+        }
     }
 
     /**

@@ -83,6 +83,18 @@ sealed interface Issue {
         override val id get() = "empty:${contact.id}"
     }
 
+    /**
+     * A contact with a phone number, with what the phone knows of how much it
+     * is used. Every such contact gets one; [InactiveFilter] picks which to show.
+     */
+    data class Inactive(
+        val contact: Contact,
+        val onWhatsApp: Boolean,
+        val lastCall: Long?,
+    ) : Issue {
+        override val id get() = "inactive:${contact.id}"
+    }
+
     /** Several contacts that look like the same person. */
     data class Duplicates(
         val contacts: List<Contact>,

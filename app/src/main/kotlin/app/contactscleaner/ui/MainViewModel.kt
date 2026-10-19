@@ -8,6 +8,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.contactscleaner.core.AnalysisReport
 import app.contactscleaner.core.ContactAnalyzer
+import app.contactscleaner.core.IdleFilter
+import app.contactscleaner.core.InactiveFilter
 import app.contactscleaner.core.Issue
 import app.contactscleaner.core.PhoneFormat
 import app.contactscleaner.core.PhoneNormalizer
@@ -42,8 +44,18 @@ data class UiState(
     val inputs: Map<String, String> = emptyMap(),
     val log: List<ChangeRun> = emptyList(),
     val message: String? = null,
+    val inactiveFilter: InactiveFilter = InactiveFilter(),
+    val callLogGranted: Boolean = false,
+    /** When the report was made; "inactive" ages are measured from it. */
+    val scannedAt: Long = 0,
 ) {
-    fun issuesIn(category: Category) = report?.issues.orEmpty().filter { Category.of(it) == category }
+    /** Without the call log every "last call" is unknown, so the idle part of the filter is ignored. */
+    private val effectiveInactiveFilter
+        get() = if (callLogGranted) inactiveFilter else inactiveFilter.copy(idle = IdleFilter.ANY)
+
+    fun issuesIn(category: Category) = report?.issues.orEmpty().filter {
+        Category.of(it) == category && (it !is Issue.Inactive || effectiveInactiveFilter.matches(it, scannedAt))
+    }
 
     /** Undo goes newest first, one run at a time. */
     val undoableRunId: Long? get() = log.firstOrNull { !it.undone }?.id
@@ -76,10 +88,33 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun rescan() {
         val normalizer = normalizer
+        val readCallLog = _state.value.callLogGranted
         val report = withContext(Dispatchers.IO) {
-            ContactAnalyzer(normalizer).analyze(ContactsRepository(resolver).loadAll())
+            val repository = ContactsRepository(resolver)
+            val contacts = repository.withActivity(repository.loadAll(), normalizer, readCallLog)
+            ContactAnalyzer(normalizer).analyze(contacts, withActivity = true)
         }
-        _state.update { it.copy(report = report, selected = defaultSelection(report), inputs = emptyMap()) }
+        _state.update {
+            it.copy(
+                report = report,
+                selected = defaultSelection(report),
+                inputs = emptyMap(),
+                scannedAt = System.currentTimeMillis(),
+            )
+        }
+    }
+
+    /** Changing the filter clears the selection, so nothing hidden stays selected for deletion. */
+    fun setInactiveFilter(filter: InactiveFilter) = _state.update { s ->
+        val hidden = s.report?.issues.orEmpty().filterIsInstance<Issue.Inactive>().map { it.id }.toSet()
+        s.copy(inactiveFilter = filter, selected = s.selected - hidden)
+    }
+
+    /** Called once the call-log permission is known; rescans if it was just granted. */
+    fun setCallLogGranted(granted: Boolean) {
+        val changed = granted != _state.value.callLogGranted
+        _state.update { it.copy(callLogGranted = granted) }
+        if (changed && granted && _state.value.report != null) scan()
     }
 
     private suspend fun reloadLog() {
@@ -174,7 +209,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             is Issue.PhoneFormat, is Issue.RepeatedEntries, is Issue.NameCleanup -> true
             is Issue.MissingName -> it.suggested != null
             is Issue.MissingAreaCode -> it.guess != null
-            is Issue.EmptyContact, is Issue.InvalidPhone, is Issue.OutdatedPhone -> false
+            is Issue.EmptyContact, is Issue.InvalidPhone, is Issue.OutdatedPhone, is Issue.Inactive -> false
         }
     }.map { it.id }.toSet()
 
