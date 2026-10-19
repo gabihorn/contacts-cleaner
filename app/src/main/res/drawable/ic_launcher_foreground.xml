@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A person silhouette with a check mark, inside the 72dp adaptive-icon safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M48,34a10,10 0,1 1,-0.01 0zM30,72c0,-11 8,-18 18,-18s18,7 18,18v2H30z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#B8F2D9"
+        android:strokeWidth="5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M64,50l6,6 12,-14" />
+</vector>
