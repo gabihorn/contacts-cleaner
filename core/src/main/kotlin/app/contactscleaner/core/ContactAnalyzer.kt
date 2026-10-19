@@ -67,14 +67,14 @@ class ContactAnalyzer(
         val name = contact.name
         val displayName = contact.displayName
         if (displayName == null || Names.looksLikePhoneOrEmail(displayName)) {
-            val guess = contact.meName ?: contact.emails.firstNotNullOfOrNull { Names.fromEmail(it.address) }
+            val guess = contact.emails.firstNotNullOfOrNull { Names.fromEmail(it.address) }
             issues += Issue.MissingName(contact, guess)
         } else if (name != null) {
             val problem = Names.suspiciousReason(displayName)
             if (problem != null) {
                 val suggestion = when (problem) {
                     NameProblem.EMOJI -> Names.stripEmoji(displayName).let { Names.cleanup(it) ?: it }
-                    else -> contact.meName
+                    else -> null
                 }
                 issues += Issue.SuspiciousName(contact, name, problem, suggestion)
             } else {

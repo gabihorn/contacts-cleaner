@@ -67,12 +67,9 @@ import app.contactscleaner.core.Issue
 import app.contactscleaner.core.Names
 import app.contactscleaner.core.OutdatedReason
 import app.contactscleaner.core.PhoneFormat
-import app.contactscleaner.core.SavedMeFilter
 import app.contactscleaner.core.WhatsAppFilter
 import app.contactscleaner.data.Action
 import app.contactscleaner.data.ChangeRun
-import app.contactscleaner.me.MeScreen
-import app.contactscleaner.me.MeViewModel
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -83,7 +80,7 @@ private fun ltr(text: String) = "⁦$text⁩"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun App(vm: MainViewModel, meVm: MeViewModel) {
+fun App(vm: MainViewModel) {
     val state by vm.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
 
@@ -109,7 +106,6 @@ fun App(vm: MainViewModel, meVm: MeViewModel) {
                             Screen.Home -> "מסדר אנשי קשר"
                             is Screen.Review -> screen.category.title
                             Screen.Log -> "יומן שינויים"
-                            Screen.Me -> "ME: מי שמר אותי"
                             Screen.Archive -> "ארכיון"
                         }
                     )
@@ -135,14 +131,6 @@ fun App(vm: MainViewModel, meVm: MeViewModel) {
                 is Screen.Review -> CategoryScreen(screen.category, state, vm)
                 Screen.Log -> LogScreen(state, vm)
                 Screen.Archive -> ArchiveScreen(state, vm)
-                Screen.Me -> MeScreen(
-                    meVm,
-                    showMessage = vm::showMessage,
-                    onContactsChanged = {
-                        vm.reloadChangeLog()
-                        if (state.report != null) vm.scan()
-                    },
-                )
             }
         }
     }
@@ -232,18 +220,6 @@ private fun HomeScreen(state: UiState, vm: MainViewModel) {
                     onClick = { backupLauncher.launch(backupFileName()) },
                     enabled = state.busy == null,
                 ) { Text("גיבוי לקובץ") }
-            }
-        }
-
-        item {
-            Card(Modifier.fillMaxWidth().clickable { vm.show(Screen.Me) }) {
-                Column(Modifier.padding(16.dp)) {
-                    Text("ME: מי שמר אותי", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        "מי ששמר אותך ואתה לא, עם ייבוא הדרגתי לאנשי הקשר. גם מסמן את מי שלא שמר אותך, במסך \"ניקוי לפי פעילות\".",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
             }
         }
 
@@ -447,27 +423,6 @@ private fun InactiveFilterPanel(state: UiState, vm: MainViewModel) {
                     selected = filter.whatsApp == value,
                     onClick = { vm.setInactiveFilter(filter.copy(whatsApp = value)) },
                     label = { Text(label) },
-                )
-            }
-        }
-        if (state.meFetchedAt != null) {
-            Text("שמרו אותי (לפי ME)", style = MaterialTheme.typography.labelLarge)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                listOf(
-                    SavedMeFilter.ANY to "הכל",
-                    SavedMeFilter.DIDNT_SAVE_ME to "לא שמרו אותי",
-                ).forEach { (value, label) ->
-                    FilterChip(
-                        selected = filter.savedMe == value,
-                        onClick = { vm.setInactiveFilter(filter.copy(savedMe = value)) },
-                        label = { Text(label) },
-                    )
-                }
-            }
-            if (filter.savedMe == SavedMeFilter.DIDNT_SAVE_ME) {
-                Text(
-                    "\"לא שמרו אותי\" = לא מופיעים ברשימה של ME. ME לא מכירה את כולם, אז זו הערכה בלבד.",
-                    style = MaterialTheme.typography.bodySmall,
                 )
             }
         }

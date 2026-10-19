@@ -16,8 +16,6 @@ kotlin {
 
 dependencies {
     api("com.googlecode.libphonenumber:libphonenumber:8.13.52")
-    // Tree-level JSON parsing of ME's responses; no serialization plugin needed.
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     testImplementation(kotlin("test"))
 }
 

@@ -18,14 +18,6 @@ data class Contact(
     val onWhatsApp: Boolean = false,
     /** Time (epoch ms) of the latest phone call with any of this contact's numbers; null if none in the call log. */
     val lastCall: Long? = null,
-    /**
-     * Whether this person saved the user, per the last ME fetch: true if ME
-     * lists them, false if it doesn't, null if there's no ME data. "False"
-     * is only a hint: ME doesn't know everyone.
-     */
-    val savedMe: Boolean? = null,
-    /** The name this person registered on ME, if ME has one. */
-    val meName: String? = null,
 ) {
     val displayName: String? get() = name?.displayName?.takeIf { it.isNotBlank() }
 

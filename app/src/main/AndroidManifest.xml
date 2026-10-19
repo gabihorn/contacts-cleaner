@@ -5,8 +5,6 @@
     <uses-permission android:name="android.permission.WRITE_CONTACTS" />
     <!-- Optional: when each contact was last called, for the "inactive contacts" filter. -->
     <uses-permission android:name="android.permission.READ_CALL_LOG" />
-    <!-- Only for the optional ME connection; nothing else goes online. -->
-    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
         android:allowBackup="false"

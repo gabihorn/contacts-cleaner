@@ -23,8 +23,6 @@ import app.contactscleaner.data.ChangeLog
 import app.contactscleaner.data.ChangeRun
 import app.contactscleaner.data.ContactsRepository
 import app.contactscleaner.data.ContactsWriter
-import app.contactscleaner.me.MeData
-import app.contactscleaner.me.MeStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -37,7 +35,6 @@ sealed interface Screen {
     data object Home : Screen
     data class Review(val category: Category) : Screen
     data object Log : Screen
-    data object Me : Screen
     data object Archive : Screen
 }
 
@@ -56,8 +53,6 @@ data class UiState(
     val callLogGranted: Boolean = false,
     /** When the report was made; "inactive" ages are measured from it. */
     val scannedAt: Long = 0,
-    /** When ME was last fetched; null if never. "Didn't save me" filtering needs it. */
-    val meFetchedAt: Long? = null,
     val archived: List<ArchivedContact> = emptyList(),
 ) {
     /** Without the call log every "last call" is unknown, so the idle part of the filter is ignored. */
@@ -77,7 +72,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val resolver = app.contentResolver
     private val region = detectRegion(app)
     private val changeLog = ChangeLog(app)
-    private val meStore = MeStore(app)
     private val archive = Archive(app)
 
     private val _state = MutableStateFlow(
@@ -88,6 +82,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val normalizer get() = PhoneNormalizer(region, _state.value.format)
 
     init {
+        // Left behind by the removed ME connection on phones that used it.
+        java.io.File(app.filesDir, "me.json").delete()
         viewModelScope.launch {
             reloadLog()
             reloadArchive()
@@ -148,30 +144,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun rescan() {
         val normalizer = normalizer
         val readCallLog = _state.value.callLogGranted
-        val (report, me) = withContext(Dispatchers.IO) {
+        val report = withContext(Dispatchers.IO) {
             val repository = ContactsRepository(resolver)
-            val me = meStore.load()
-            val contacts = withMe(repository.withActivity(repository.loadAll(), normalizer, readCallLog), me)
-            ContactAnalyzer(normalizer).analyze(contacts, withActivity = true) to me
+            val contacts = repository.withActivity(repository.loadAll(), normalizer, readCallLog)
+            ContactAnalyzer(normalizer).analyze(contacts, withActivity = true)
         }
         _state.update {
             it.copy(
                 report = report,
-                meFetchedAt = me?.fetchedAt,
                 selected = defaultSelection(report),
                 inputs = emptyMap(),
                 scannedAt = System.currentTimeMillis(),
             )
-        }
-    }
-
-    /** Marks who saved the user and the names they registered, from the last ME fetch. */
-    private fun withMe(contacts: List<Contact>, me: MeData?): List<Contact> {
-        if (me == null) return contacts
-        val byPhone = me.people.associateBy { it.phone }
-        return contacts.map { c ->
-            val people = c.phones.mapNotNull { byPhone[normalizer.key(it.number)] }
-            c.copy(savedMe = people.isNotEmpty(), meName = people.firstNotNullOfOrNull { it.personName })
         }
     }
 
@@ -215,13 +199,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** What the number will become with [areaCode]; null if that isn't a valid number. */
     fun preview(issue: Issue.MissingAreaCode, areaCode: String): String? =
         normalizer.withAreaCode(issue.phone.number, areaCode)
-
-    fun showMessage(text: String) = _state.update { it.copy(message = text) }
-
-    /** For when another screen added runs to the change log. */
-    fun reloadChangeLog() {
-        viewModelScope.launch { reloadLog() }
-    }
 
     fun dismissMessage() = _state.update { it.copy(message = null) }
 
