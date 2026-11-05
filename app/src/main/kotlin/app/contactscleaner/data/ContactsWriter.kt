@@ -268,7 +268,11 @@ class ContactsWriter(
         val values = ContentValues()
         row.values.forEach { (column, value) -> values.put(column, value) }
         values.put(Data.MIMETYPE, row.mimeType)
-        row.blob?.let { values.put(Data.DATA15, it) }
+        row.blob?.let {
+            values.put(Data.DATA15, it)
+            // data14 points at the old photo's file; the provider makes a new one from the blob.
+            values.remove(Data.DATA14)
+        }
         val builder = ContentProviderOperation.newInsert(Data.CONTENT_URI).withValues(values)
         if (rawContactId != null) builder.withValue(Data.RAW_CONTACT_ID, rawContactId)
         else builder.withValueBackReference(Data.RAW_CONTACT_ID, 0)
