@@ -156,7 +156,10 @@ private fun rememberCsvLauncher(onPicked: (android.net.Uri) -> Unit) =
 private fun csvFileName() = "contacts-${LocalDate.now()}.csv"
 
 /** The contacts a category's issues are about, for exporting that list. */
-private fun contactsOf(issues: List<Issue>): List<Contact> = issues.flatMap { issue ->
+private fun contactsOf(issues: List<Issue>): List<Contact> = issues.flatMap(::contactsIn).distinctBy { it.id }
+
+/** The contacts one issue is about. */
+private fun contactsIn(issue: Issue): List<Contact> =
     when (issue) {
         is Issue.Duplicates -> issue.contacts
         is Issue.PhoneFormat -> listOf(issue.contact)
@@ -172,7 +175,7 @@ private fun contactsOf(issues: List<Issue>): List<Contact> = issues.flatMap { is
         is Issue.OutdatedPhone -> listOf(issue.contact)
         is Issue.InvalidPhone -> listOf(issue.contact)
     }
-}.distinctBy { it.id }
+
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -237,6 +240,9 @@ private fun HomeScreen(state: UiState, vm: MainViewModel) {
                 }
                 OutlinedButton(onClick = { exportAll.launch(csvFileName()) }, enabled = state.busy == null) {
                     Text("ייצוא לאקסל")
+                }
+                if (state.ignored.isNotEmpty()) {
+                    TextButton(onClick = vm::showIgnored) { Text("הצגת ${state.ignored.size} פריטים מוסתרים") }
                 }
             }
         }
@@ -315,6 +321,9 @@ private fun CategoryScreen(category: Category, state: UiState, vm: MainViewModel
                     TextButton(onClick = { vm.setAll(category, false) }) { Text("נקה סימון") }
                     if (category == Category.DUPLICATES) {
                         TextButton(onClick = vm::selectConfidentDuplicates) { Text("סמן רק ודאיים") }
+                    }
+                    if (chosen > 0) {
+                        TextButton(onClick = { vm.ignoreSelected(category) }) { Text("לא להציג שוב ($chosen)") }
                     }
                     TextButton(onClick = { exportList.launch(csvFileName()) }) { Text("ייצוא הרשימה") }
                 }
@@ -525,8 +534,27 @@ private fun IssueCard(issue: Issue, state: UiState, vm: MainViewModel, selectabl
             }
             Column(Modifier.weight(1f).padding(top = 12.dp, end = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 IssueBody(issue, state, vm)
+                Row {
+                    // Duplicates open each contact from its own line (see ContactDetails).
+                    val single = contactsIn(issue).singleOrNull()
+                    if (single != null) {
+                        val context = LocalContext.current
+                        TextButton(onClick = { openContact(context, single.id) }) { Text("פתח באנשי קשר") }
+                    }
+                    TextButton(onClick = { vm.ignore(listOf(issue.id)) }) { Text("לא להציג שוב") }
+                }
             }
         }
+    }
+}
+
+/** Opens a contact in the phone's Contacts app, to look at everything it holds. */
+private fun openContact(context: android.content.Context, contactId: Long) {
+    val uri = android.content.ContentUris.withAppendedId(android.provider.ContactsContract.Contacts.CONTENT_URI, contactId)
+    try {
+        context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, uri))
+    } catch (_: android.content.ActivityNotFoundException) {
+        // No contacts app to show it in; nothing else to do.
     }
 }
 
@@ -711,7 +739,8 @@ private fun Title(text: String) = Text(text, style = MaterialTheme.typography.ti
 
 @Composable
 private fun ContactDetails(contact: Contact) {
-    Column {
+    val context = LocalContext.current
+    Column(Modifier.fillMaxWidth().clickable { openContact(context, contact.id) }) {
         Title(contact.title)
         val details = contact.phones.map { it.number } + contact.emails.map { it.address }
         if (details.isNotEmpty()) {

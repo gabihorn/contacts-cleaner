@@ -54,13 +54,16 @@ data class UiState(
     /** When the report was made; "inactive" ages are measured from it. */
     val scannedAt: Long = 0,
     val archived: List<ArchivedContact> = emptyList(),
+    /** Issues the user said are fine as they are; never shown again until "show hidden". */
+    val ignored: Set<String> = emptySet(),
 ) {
     /** Without the call log every "last call" is unknown, so the idle part of the filter is ignored. */
     private val effectiveInactiveFilter
         get() = if (callLogGranted) inactiveFilter else inactiveFilter.copy(idle = IdleFilter.ANY)
 
     fun issuesIn(category: Category) = report?.issues.orEmpty().filter {
-        Category.of(it) == category && (it !is Issue.Inactive || effectiveInactiveFilter.matches(it, scannedAt))
+        it.id !in ignored && Category.of(it) == category &&
+            (it !is Issue.Inactive || effectiveInactiveFilter.matches(it, scannedAt))
     }
 
     /** Undo goes newest first, one run at a time. */
@@ -75,7 +78,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val archive = Archive(app)
 
     private val _state = MutableStateFlow(
-        UiState(format = prefs.getString("format", null)?.let(PhoneFormat::valueOf) ?: PhoneFormat.E164)
+        UiState(
+            format = prefs.getString("format", null)?.let(PhoneFormat::valueOf) ?: PhoneFormat.E164,
+            ignored = prefs.getStringSet("ignored", null).orEmpty().toSet(),
+        )
     )
     val state: StateFlow<UiState> = _state
 
@@ -139,6 +145,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 .filter { issue -> (issue as Issue.NameTag).tags.any { tagFamily(it) == family } }
                 .map { it.id }
         )
+    }
+
+    /** Hides [ids] from every list from now on; they are also unticked. */
+    fun ignore(ids: Collection<String>) {
+        _state.update { it.copy(ignored = it.ignored + ids, selected = it.selected - ids.toSet()) }
+        prefs.edit().putStringSet("ignored", _state.value.ignored).apply()
+    }
+
+    /** Hides what is ticked in [category]. */
+    fun ignoreSelected(category: Category) =
+        ignore(_state.value.issuesIn(category).map { it.id }.filter { it in _state.value.selected })
+
+    fun showIgnored() {
+        _state.update { it.copy(ignored = emptySet()) }
+        prefs.edit().remove("ignored").apply()
     }
 
     /** Ticks only the duplicates that are safe to merge without a second look. */
