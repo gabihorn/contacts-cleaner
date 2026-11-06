@@ -66,3 +66,22 @@ class PhoneNormalizerTest {
         assertEquals(il.key("050-1234567"), il.key("+972 50 123 4567"))
     }
 }
+
+class RegionGuessTest {
+    @Test
+    fun `israeli numbers win over an american sim`() {
+        val book = listOf("052-8123456", "054-4567890", "02-5801234", "+12125551234")
+        assertEquals("IL", RegionGuess.best(book, listOf("US", "IL")))
+    }
+
+    @Test
+    fun `american numbers keep the american sim`() {
+        val book = listOf("(212) 555-1234", "415-555-0199", "052-8123456")
+        assertEquals("US", RegionGuess.best(book, listOf("US", "IL")))
+    }
+
+    @Test
+    fun `no local numbers keeps the first candidate`() {
+        assertEquals("US", RegionGuess.best(listOf("+972528123456"), listOf("US", "IL")))
+    }
+}

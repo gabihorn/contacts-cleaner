@@ -140,7 +140,7 @@ class UiTourTest {
         waitForText("זה מה שאפשר לסדר")
         compose.onNode(hasScrollAction()).performScrollToNode(hasText("תוספות קבועות בשם"))
         compose.onNodeWithText("תוספות קבועות בשם").performClick()
-        waitForText("סמן את כל")
+        waitForText("סימון לפי תוספת")
         shot("03-tags")
         back()
 

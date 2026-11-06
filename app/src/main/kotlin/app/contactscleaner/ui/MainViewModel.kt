@@ -19,6 +19,7 @@ import app.contactscleaner.core.InactiveFilter
 import app.contactscleaner.core.Issue
 import app.contactscleaner.core.PhoneFormat
 import app.contactscleaner.core.PhoneNormalizer
+import app.contactscleaner.core.RegionGuess
 import app.contactscleaner.core.CsvExporter
 import app.contactscleaner.data.Action
 import app.contactscleaner.data.Archive
@@ -80,7 +81,12 @@ data class UiState(
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = app.getSharedPreferences("settings", Context.MODE_PRIVATE)
     private val resolver = app.contentResolver
-    private val region = detectRegion(app)
+    /** SIM, network and locale countries, in that order; see [rescan] for how one is picked. */
+    private val regionCandidates = regionCandidates(app)
+
+    /** The country local numbers are read as; settled by each scan from the address book itself. */
+    @Volatile
+    private var region = regionCandidates.first()
     private val changeLog = ChangeLog(app)
     private val archive = Archive(app)
 
@@ -235,7 +241,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val readCallLog = _state.value.callLogGranted
         val report = withContext(Dispatchers.IO) {
             val repository = ContactsRepository(resolver)
-            val contacts = repository.withActivity(repository.loadAll(), normalizer, readCallLog)
+            val loaded = repository.loadAll()
+            region = RegionGuess.best(loaded.flatMap { c -> c.phones.map { it.number } }, regionCandidates)
+            val normalizer = PhoneNormalizer(region, _state.value.format)
+            val contacts = repository.withActivity(loaded, normalizer, readCallLog)
             ContactAnalyzer(normalizer).analyze(contacts, withActivity = true)
         }
         // Keep what the user ticked and typed for items still there; only items
@@ -413,13 +422,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             else -> null
         }
 
-        /** The SIM's country, else the phone's locale; numbers without a country code are read as local to it. */
-        fun detectRegion(context: Context): String {
+        /** Countries local numbers might belong to: the SIM's, the network's, the phone's locale, then Israel. */
+        fun regionCandidates(context: Context): List<String> {
             val tm = context.getSystemService(TelephonyManager::class.java)
-            return listOfNotNull(tm?.simCountryIso, tm?.networkCountryIso, Locale.getDefault().country)
-                .firstOrNull { it.length == 2 }
-                ?.uppercase(Locale.ROOT)
-                ?: "IL"
+            return (listOfNotNull(tm?.simCountryIso, tm?.networkCountryIso, Locale.getDefault().country) + "IL")
+                .filter { it.length == 2 }
+                .map { it.uppercase(Locale.ROOT) }
+                .distinct()
         }
     }
 }

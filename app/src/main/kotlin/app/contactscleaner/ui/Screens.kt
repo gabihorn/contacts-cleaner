@@ -727,10 +727,11 @@ private fun IssueBody(issue: Issue, state: UiState, vm: MainViewModel) {
             }
             issue.contacts.forEach { ContactDetails(it) }
             HorizontalDivider(Modifier.padding(vertical = 4.dp))
-            Text("אחרי איחוד:", style = MaterialTheme.typography.labelMedium)
-            MergeNamePicker(issue, state, vm)
             val details = issue.merged.phones + issue.merged.emails
-            if (details.isNotEmpty()) Text(details.joinToString(", ") { ltr(it) }, style = small)
+            if (details.isNotEmpty()) {
+                Text("אחרי האיחוד יישארו: " + details.joinToString(", ") { ltr(it) }, style = small)
+            }
+            MergeNamePicker(issue, state, vm)
         }
     }
 }
