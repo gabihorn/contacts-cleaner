@@ -2,6 +2,10 @@ package app.contactscleaner.ui
 
 import android.app.Application
 import android.content.Context
+import android.database.ContentObserver
+import android.os.Handler
+import android.os.Looper
+import android.provider.ContactsContract
 import android.net.Uri
 import android.telephony.TelephonyManager
 import androidx.lifecycle.AndroidViewModel
@@ -91,6 +95,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val normalizer get() = PhoneNormalizer(region, _state.value.format)
 
+    /** Set when the address book changed since the last scan (here or in any other app). */
+    @Volatile
+    private var contactsChanged = false
+
+    private val contactsObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
+        override fun onChange(selfChange: Boolean) {
+            contactsChanged = true
+        }
+    }
+
     init {
         // Left behind by the removed ME connection on phones that used it.
         java.io.File(app.filesDir, "me.json").delete()
@@ -98,6 +112,33 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             reloadLog()
             reloadArchive()
         }
+    }
+
+    /**
+     * Called when the screen opens: remembers the permissions and scans right
+     * away, so there is never a "scan" button to press.
+     */
+    fun start(contactsGranted: Boolean, callLogGranted: Boolean) {
+        _state.update { it.copy(callLogGranted = callLogGranted) }
+        if (!contactsGranted) return
+        if (!observing) {
+            resolver.registerContentObserver(ContactsContract.AUTHORITY_URI, true, contactsObserver)
+            observing = true
+        }
+        if (_state.value.report == null) scan()
+    }
+
+    private var observing = false
+
+    /** Back in the app: if contacts changed meanwhile, the lists catch up by themselves. */
+    fun onResume() {
+        if (observing && contactsChanged && _state.value.report != null) {
+            work("מתעדכן…") { rescan() }
+        }
+    }
+
+    override fun onCleared() {
+        if (observing) resolver.unregisterContentObserver(contactsObserver)
     }
 
     private suspend fun reloadArchive() {
@@ -109,8 +150,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun restore(ids: Set<Long>) = work("משחזר מהארכיון…") {
         val items = _state.value.archived.filter { it.id in ids }
         withContext(Dispatchers.IO) {
-            ContactsWriter(resolver, normalizer).restore(archive.withRaws(items).map { it.raws })
-            archive.remove(ids)
+            // In parts, like applying: each part's snapshots are loaded only while it is restored.
+            items.chunked(PART_SIZE).forEach { part ->
+                ContactsWriter(resolver, normalizer).restore(archive.withRaws(part).map { it.raws })
+                archive.remove(part.map { it.id }.toSet())
+            }
         }
         _state.update { it.copy(message = "${items.size} אנשי קשר חזרו לטלפון") }
         reloadArchive()
@@ -186,6 +230,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun scan() = work("סורק אנשי קשר…") { rescan() }
 
     private suspend fun rescan() {
+        contactsChanged = false
         val normalizer = normalizer
         val readCallLog = _state.value.callLogGranted
         val report = withContext(Dispatchers.IO) {
@@ -193,11 +238,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val contacts = repository.withActivity(repository.loadAll(), normalizer, readCallLog)
             ContactAnalyzer(normalizer).analyze(contacts, withActivity = true)
         }
-        _state.update {
-            it.copy(
+        // Keep what the user ticked and typed for items still there; only items
+        // new to this scan get the default selection.
+        _state.update { s ->
+            val newIds = report.issues.map { it.id }.toSet()
+            val oldIds = s.report?.issues.orEmpty().map { it.id }.toSet()
+            val defaults = defaultSelection(report).filter { it !in oldIds }
+            s.copy(
                 report = report,
-                selected = defaultSelection(report),
-                inputs = emptyMap(),
+                selected = s.selected.filter { it in newIds }.toSet() + defaults,
+                inputs = s.inputs.filterKeys { it in newIds },
                 scannedAt = System.currentTimeMillis(),
             )
         }
@@ -209,7 +259,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         s.copy(inactiveFilter = filter, selected = s.selected - hidden)
     }
 
-    /** Called once the call-log permission is known; rescans if it was just granted. */
+    /** Called when the call-log permission is granted on the "inactive" screen; rescans with it. */
     fun setCallLogGranted(granted: Boolean) {
         val changed = granted != _state.value.callLogGranted
         _state.update { it.copy(callLogGranted = granted) }
@@ -255,20 +305,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val s = _state.value
         val chosen = s.issuesIn(category).filter { it.id in s.selected }
         val normalizer = normalizer
-        val now = System.currentTimeMillis()
-        val run = withContext(Dispatchers.IO) {
-            val title = if (action == Action.FIX) category.title else "${category.title}: מחיקה"
-            ContactsWriter(resolver, normalizer).apply(title, chosen, s.inputs, action)
-                ?.also(changeLog::add)
-                ?.also { run ->
-                    if (action == Action.ARCHIVE_CONTACTS) {
-                        archive.add(chosen.mapNotNull(::contactOf).map { c ->
-                            ArchivedContact(c.id, c.title, now, run.id, raws = run.before.filter { it.id in c.rawContactIds })
-                        })
-                    }
-                }
+        val baseTitle = when (action) {
+            Action.FIX -> category.title
+            Action.ARCHIVE_CONTACTS -> "${category.title}: ארכיון"
+            else -> "${category.title}: מחיקה"
         }
-        if (run == null) {
+        // Big selections go in parts: each part's snapshot (whole contacts,
+        // photos included) is held in memory while it is written, so parts
+        // keep that small however many items were ticked.
+        val parts = chosen.chunked(PART_SIZE)
+        val runs = mutableListOf<ChangeRun>()
+        parts.forEachIndexed { index, part ->
+            if (parts.size > 1) _state.update { it.copy(busy = "מבצע… חלק ${index + 1} מתוך ${parts.size}") }
+            val title = if (parts.size > 1) "$baseTitle (חלק ${index + 1}/${parts.size})" else baseTitle
+            withContext(Dispatchers.IO) {
+                val run = ContactsWriter(resolver, normalizer).apply(title, part, s.inputs, action) ?: return@withContext
+                changeLog.add(run)
+                if (action == Action.ARCHIVE_CONTACTS) {
+                    val now = System.currentTimeMillis()
+                    archive.add(part.mapNotNull(::contactOf).map { c ->
+                        ArchivedContact(c.id, c.title, now, run.id, raws = run.before.filter { it.id in c.rawContactIds })
+                    })
+                }
+                runs += run.copy(before = emptyList())
+            }
+        }
+        if (runs.isEmpty()) {
             _state.update { it.copy(message = "לא היה מה לתקן") }
             return
         }
@@ -281,7 +343,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val done = chosenIds.size - left
         val verification = if (left == 0) "אומתו כל $done השינויים בסריקה חוזרת"
         else "אומתו $done מתוך ${chosenIds.size}. $left עדיין מופיעים ברשימה ולא השתנו"
-        withContext(Dispatchers.IO) { changeLog.update(run.copy(verification = verification)) }
+        withContext(Dispatchers.IO) { runs.forEach { changeLog.update(it.copy(verification = verification)) } }
         _state.update { it.copy(message = verification) }
         reloadLog()
         reloadArchive()
@@ -299,14 +361,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         rescan()
     }
 
-    /** Backs up to [target], then applies [thenApply] if given and the backup worked. */
-    fun backup(target: Uri, thenApply: Pair<Category, Action>? = null) = work("מגבה אנשי קשר…") {
+    /** Saves every contact to [target] as one .vcf file. */
+    fun backup(target: Uri) = work("מגבה אנשי קשר…") {
         val count = withContext(Dispatchers.IO) { Backup(resolver).exportTo(target) }
         _state.update { it.copy(message = "גובו $count אנשי קשר") }
-        if (thenApply != null) {
-            _state.update { it.copy(busy = "מבצע…") }
-            applyNow(thenApply.first, thenApply.second)
-        }
     }
 
     private fun work(label: String, block: suspend () -> Unit) {
@@ -343,6 +401,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }.map { it.id }.toSet()
 
     private companion object {
+        /** Items per change-log run; see [applyNow]. */
+        const val PART_SIZE = 200
+
         /** The one contact a contact-level issue is about. */
         fun contactOf(issue: Issue): Contact? = when (issue) {
             is Issue.EmptyContact -> issue.contact

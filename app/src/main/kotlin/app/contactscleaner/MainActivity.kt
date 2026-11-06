@@ -15,6 +15,11 @@ import app.contactscleaner.ui.MainViewModel
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
 
+    override fun onResume() {
+        super.onResume()
+        viewModel.onResume()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         CrashLog.install(this)
