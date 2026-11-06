@@ -124,7 +124,10 @@ fun App(vm: MainViewModel) {
                 },
             )
         },
-        snackbarHost = { SnackbarHost(snackbar) },
+        // On a list screen the action buttons sit at the bottom; messages show above them, not over them.
+        snackbarHost = {
+            SnackbarHost(snackbar, Modifier.padding(bottom = if (state.screen is Screen.Review) 84.dp else 0.dp))
+        },
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
             state.busy?.let { label ->
