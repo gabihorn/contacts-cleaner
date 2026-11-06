@@ -65,7 +65,15 @@ class PhoneNormalizer(
         PhoneNumberUtil.PhoneNumberType.FIXED_LINE,
     )
 
-    fun normalize(raw: String): PhoneResult {
+    // A scan asks about each number many times (repeats, format, type, duplicates…);
+    // parsing is the slow part, so each distinct spelling is parsed once.
+    private val cache = java.util.concurrent.ConcurrentHashMap<String, PhoneResult>()
+    private val lineTypes = java.util.concurrent.ConcurrentHashMap<String, Any>()
+    private object NONE
+
+    fun normalize(raw: String): PhoneResult = cache.getOrPut(raw) { parseNumber(raw) }
+
+    private fun parseNumber(raw: String): PhoneResult {
         val trimmed = raw.trim()
         val digits = trimmed.filter { it.isDigit() }
         if (digits.isEmpty()) return PhoneResult.Invalid(trimmed)
@@ -149,6 +157,11 @@ class PhoneNormalizer(
     /** Mobile or landline, when libphonenumber can tell; null otherwise. */
     fun lineType(raw: String): LineType? {
         val key = (normalize(raw) as? PhoneResult.Valid)?.key ?: return null
+        return lineTypes.getOrPut(key) { lookUpLineType(key) ?: NONE } as? LineType
+    }
+
+
+    private fun lookUpLineType(key: String): LineType? {
         val type = try {
             util.getNumberType(util.parse(key, null))
         } catch (_: NumberParseException) {

@@ -39,6 +39,23 @@ class SimilarNameDuplicatesTest {
     }
 
     @Test
+    fun `a same-name stranger never joins a certain merge`() {
+        // A and B: one person (same number). C: another person who happens to share B's name.
+        val a = contact("דוד כהן", "052-8123456")
+        val b = contact("דוד כהן", "+972528123456")
+        val c = contact("דוד כהן", "054-7777777")
+        val dup = groups(a, b, c).single()
+        assertEquals(3, dup.contacts.size)
+        assertFalse(dup.confident, "C is joined by name only")
+    }
+
+    @Test
+    fun `many strangers with one common name are not shown as duplicates`() {
+        val many = (1..8).map { contact("דוד כהן", "05281${it}0000") }
+        assertTrue(groups(*many.toTypedArray()).isEmpty())
+    }
+
+    @Test
     fun `nickname and one-letter difference`() {
         assertEquals(1, groups(contact("יוסי לוי", "0528111111"), contact("יוסף לוי", "0528222222")).size)
         assertEquals(1, groups(contact("אבי כהן", "0528111111"), contact("אביב כהן", "0528222222")).size)

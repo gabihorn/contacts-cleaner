@@ -141,4 +141,25 @@ class ContactAnalyzerTest {
         val b = contact("מוקד ב", phones = listOf("*2700"))
         assertTrue(analyzer.analyze(listOf(a, b)).ofType<Issue.Duplicates>().isEmpty())
     }
+
+    @Test
+    fun `same number in two accounts' copies is not a repeat`() {
+        val c = Contact(
+            id = 1, name = NameEntry(2, "משה כהן"),
+            phones = listOf(
+                PhoneEntry(3, "+972528123456", rawContactId = 10), // Google copy
+                PhoneEntry(4, "+972528123456", rawContactId = 11), // phone-only copy
+            ),
+        )
+        assertTrue(analyzer.analyze(listOf(c)).ofType<Issue.RepeatedEntries>().isEmpty())
+    }
+
+    @Test
+    fun `same number twice in one copy is a repeat`() {
+        val c = Contact(
+            id = 1, name = NameEntry(2, "משה כהן"),
+            phones = listOf(PhoneEntry(3, "052-8123456", rawContactId = 10), PhoneEntry(4, "+972528123456", rawContactId = 10)),
+        )
+        assertEquals(1, analyzer.analyze(listOf(c)).ofType<Issue.RepeatedEntries>().single().repeatedPhones.size)
+    }
 }

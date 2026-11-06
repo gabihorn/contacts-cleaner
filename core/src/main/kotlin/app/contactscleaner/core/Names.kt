@@ -11,6 +11,15 @@ object Names {
      */
     fun matchKey(name: String?): String? {
         if (name.isNullOrBlank()) return null
+        val cached = matchKeys[name]
+        if (cached != null) return cached.ifEmpty { null }
+        return computeMatchKey(name).also { matchKeys[name] = it.orEmpty() }
+    }
+
+    // Asked for many times per name in a scan (duplicates, name checks); worked out once.
+    private val matchKeys = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    private fun computeMatchKey(name: String): String? {
         // "הרב משה כהן" and "משה כהן" are the same person.
         val withoutTitles = spaces.split(normalizeTitles(spaces.replace(name.trim(), " ")))
             .filterNot { it in canonicalTitles }

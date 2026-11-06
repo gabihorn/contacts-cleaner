@@ -44,9 +44,20 @@ object Phonetic {
      */
     fun key(name: String?, loose: Boolean = false): String? {
         if (name.isNullOrBlank()) return null
+        // A scan asks for the same names' keys many times; work each out once.
+        val cached = (if (loose) looseKeys else strictKeys)[name]
+        if (cached != null) return cached.ifEmpty { null }
+        return computeKey(name, loose).also { (if (loose) looseKeys else strictKeys)[name] = it.orEmpty() }
+    }
+
+    private val strictKeys = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val looseKeys = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val wordSplit = Regex("[^\\p{L}']+")
+
+    private fun computeKey(name: String, loose: Boolean): String? {
         val words = niqqud.replace(name, "")
             .lowercase()
-            .split(Regex("[^\\p{L}']+"))
+            .split(wordSplit)
             .filter { it.isNotBlank() }
         val keys = words.map { word -> wordKey(nicknames[word] ?: nicknames[word.trimEnd('\'')] ?: word) }
             .map { if (loose) it.replace("B", "") else it }

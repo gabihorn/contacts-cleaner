@@ -86,10 +86,10 @@ class ContactsRepository(private val resolver: ContentResolver) {
                         }
                     Phone.CONTENT_ITEM_TYPE ->
                         if (!data1.isNullOrBlank()) {
-                            b.phones += PhoneEntry(dataId, data1, type = c.getInt(5), label = c.getString(6))
+                            b.phones += PhoneEntry(dataId, data1, type = c.getInt(5), label = c.getString(6), rawContactId = c.getLong(2))
                         }
                     Email.CONTENT_ITEM_TYPE ->
-                        if (!data1.isNullOrBlank()) b.emails += EmailEntry(dataId, data1)
+                        if (!data1.isNullOrBlank()) b.emails += EmailEntry(dataId, data1, rawContactId = c.getLong(2))
                     Organization.CONTENT_ITEM_TYPE ->
                         if (b.organization.isNullOrBlank()) b.organization = data1
                 }

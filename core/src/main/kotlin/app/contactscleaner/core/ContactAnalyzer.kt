@@ -30,14 +30,16 @@ class ContactAnalyzer(
         val issues = mutableListOf<Issue>()
 
         // Repeated phones: keep the copy already in canonical form if there is one.
+        // Only within one account's copy of the contact: the same number in the
+        // Google copy and the phone copy is one number shown once, not a repeat.
         val repeatedPhones = mutableListOf<PhoneEntry>()
-        contact.phones.groupBy { normalizer.key(it.number) }.values
+        contact.phones.groupBy { it.rawContactId to normalizer.key(it.number) }.values
             .filter { it.size > 1 }
             .forEach { same ->
                 val keep = same.firstOrNull { canonical(it.number) == it.number } ?: same.first()
                 repeatedPhones += same - keep
             }
-        val repeatedEmails = contact.emails.groupBy { it.address.trim().lowercase() }.values
+        val repeatedEmails = contact.emails.groupBy { it.rawContactId to it.address.trim().lowercase() }.values
             .filter { it.size > 1 }
             .flatMap { it.drop(1) }
         if (repeatedPhones.isNotEmpty() || repeatedEmails.isNotEmpty()) {
@@ -100,12 +102,16 @@ class ContactAnalyzer(
         (normalizer.normalize(number) as? PhoneResult.Valid)?.formatted
 
     private fun findDuplicates(contacts: List<Contact>): List<Issue.Duplicates> {
+        // Two groupings: by every link, and by shared numbers and emails only.
+        // A group is certain only if the second one alone holds it together; a
+        // name match must never pull a different person into a certain merge.
         val parent = IntArray(contacts.size) { it }
-        fun find(i: Int): Int {
+        val strongParent = IntArray(contacts.size) { it }
+        fun find(i: Int, p: IntArray = parent): Int {
             var x = i
-            while (parent[x] != x) {
-                parent[x] = parent[parent[x]]
-                x = parent[x]
+            while (p[x] != x) {
+                p[x] = p[p[x]]
+                x = p[x]
             }
             return x
         }
@@ -119,6 +125,9 @@ class ContactAnalyzer(
                     if (j == i) continue
                     links += Triple(j, i, reason)
                     parent[find(i)] = find(j)
+                    if (reason == DuplicateReason.SAME_PHONE || reason == DuplicateReason.SAME_EMAIL) {
+                        strongParent[find(i, strongParent)] = find(j, strongParent)
+                    }
                 }
             }
         }
@@ -161,15 +170,23 @@ class ContactAnalyzer(
 
         return contacts.indices.groupBy { find(it) }.values
             .filter { it.size > 1 }
-            .map { members ->
+            .mapNotNull { members ->
                 val group = members.map { contacts[it] }
                 // "Similar" adds nothing when the names are already the same.
                 val reasons = reasonsByGroup.getValue(find(members.first())).let {
                     if (DuplicateReason.SAME_NAME in it) it - DuplicateReason.SIMILAR_NAME else it
                 }
-                val strong = DuplicateReason.SAME_PHONE in reasons || DuplicateReason.SAME_EMAIL in reasons
-                Issue.Duplicates(group, reasons, mergePreview(group), strong && namesCompatible(group))
+                val connectedByNumbers = members.map { find(it, strongParent) }.distinct().size == 1
+                val nameOnly = DuplicateReason.SAME_PHONE !in reasons && DuplicateReason.SAME_EMAIL !in reasons
+                // Many contacts sharing only a common name ("דוד כהן") are different people, not one saved many times.
+                if (nameOnly && group.size > MAX_NAME_ONLY_GROUP) return@mapNotNull null
+                Issue.Duplicates(group, reasons, mergePreview(group), connectedByNumbers && namesCompatible(group))
             }
+    }
+
+    private companion object {
+        /** Bigger groups held together by names alone are dropped; see [findDuplicates]. */
+        const val MAX_NAME_ONLY_GROUP = 4
     }
 
     /**

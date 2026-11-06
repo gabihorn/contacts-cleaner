@@ -30,6 +30,8 @@ class SnapshotStore(private val dir: File) {
         return (0 until array.length()).map { RawContactJson.fromJson(array.getJSONObject(it)) }
     }
 
+    fun size(key: String): Long = File(dir, "$key.json").length()
+
     fun delete(key: String) {
         File(dir, "$key.json").delete()
     }

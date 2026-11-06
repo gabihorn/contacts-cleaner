@@ -42,9 +42,12 @@ data class PhoneEntry(
     /** Opaque type code (Android's Phone.TYPE_*), passed through untouched. */
     val type: Int = 0,
     val label: String? = null,
+    /** Which account's copy of the contact holds this number. */
+    val rawContactId: Long = 0,
 )
 
 data class EmailEntry(
     val dataId: Long,
     val address: String,
+    val rawContactId: Long = 0,
 )

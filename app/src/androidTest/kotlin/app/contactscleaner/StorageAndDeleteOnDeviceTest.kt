@@ -97,6 +97,48 @@ class StorageAndDeleteOnDeviceTest {
         assertTrue(repository.loadAll().filter { c -> c.rawContactIds.any { it in ids } }.all { it.phones.size == 2 })
     }
 
+    /** One person kept in two accounts shows as one contact; the number in both copies is not a repeat. */
+    @Test
+    fun sameNumberInTwoAccountsIsNotARepeat() {
+        fun insertIn(account: String): Long {
+            val ops = arrayListOf(
+                ContentProviderOperation.newInsert(RawContacts.CONTENT_URI)
+                    .withValue(RawContacts.ACCOUNT_TYPE, "app.contactscleaner.test")
+                    .withValue(RawContacts.ACCOUNT_NAME, account)
+                    .build(),
+                ContentProviderOperation.newInsert(Data.CONTENT_URI)
+                    .withValueBackReference(Data.RAW_CONTACT_ID, 0)
+                    .withValue(Data.MIMETYPE, StructuredName.CONTENT_ITEM_TYPE)
+                    .withValue(StructuredName.DISPLAY_NAME, "רבקה גולדשטיין")
+                    .build(),
+                ContentProviderOperation.newInsert(Data.CONTENT_URI)
+                    .withValueBackReference(Data.RAW_CONTACT_ID, 0)
+                    .withValue(Data.MIMETYPE, Phone.CONTENT_ITEM_TYPE)
+                    .withValue(Phone.NUMBER, "+972533456789")
+                    .build(),
+            )
+            return ContentUris.parseId(resolver.applyBatch(ContactsContract.AUTHORITY, ops)[0].uri!!).also { created += it }
+        }
+        val a = insertIn("first")
+        val b = insertIn("second")
+        // Android joins them into one contact, as it does for one person synced from two accounts.
+        resolver.applyBatch(
+            ContactsContract.AUTHORITY,
+            arrayListOf(
+                ContentProviderOperation.newUpdate(ContactsContract.AggregationExceptions.CONTENT_URI)
+                    .withValue(ContactsContract.AggregationExceptions.TYPE, ContactsContract.AggregationExceptions.TYPE_KEEP_TOGETHER)
+                    .withValue(ContactsContract.AggregationExceptions.RAW_CONTACT_ID1, a)
+                    .withValue(ContactsContract.AggregationExceptions.RAW_CONTACT_ID2, b)
+                    .build()
+            ),
+        )
+        val contact = ContactsRepository(resolver).loadAll().single { a in it.rawContactIds }
+        assertEquals("one contact made of both copies", setOf(a, b), contact.rawContactIds.toSet())
+        assertEquals(2, contact.phones.size)
+        val repeats = ContactAnalyzer(normalizer).analyze(listOf(contact)).ofType<Issue.RepeatedEntries>()
+        assertTrue("not a repeat", repeats.isEmpty())
+    }
+
     /** A log full of big snapshots (photos) loads its index without loading them. */
     @Test
     fun bigChangeLogStaysLight() {

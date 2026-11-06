@@ -69,9 +69,13 @@ data class UiState(
     private val effectiveInactiveFilter
         get() = if (callLogGranted) inactiveFilter else inactiveFilter.copy(idle = IdleFilter.ANY)
 
-    fun issuesIn(category: Category) = report?.issues.orEmpty().filter {
-        it.id !in ignored && Category.of(it) == category &&
-            (it !is Issue.Inactive || effectiveInactiveFilter.matches(it, scannedAt))
+    /** The report's issues sorted into categories once per state, not on every redraw. */
+    private val byCategory: Map<Category, List<Issue>> by lazy {
+        report?.issues.orEmpty().groupBy(Category::of)
+    }
+
+    fun issuesIn(category: Category) = byCategory[category].orEmpty().filter {
+        it.id !in ignored && (it !is Issue.Inactive || effectiveInactiveFilter.matches(it, scannedAt))
     }
 
     /** Undo goes newest first, one run at a time. */
@@ -99,15 +103,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     )
     val state: StateFlow<UiState> = _state
 
-    private val normalizer get() = PhoneNormalizer(region, _state.value.format)
+    /**
+     * Kept between scans: it remembers every number it has read, so the scan
+     * after a fix only works out what changed.
+     */
+    private var cachedNormalizer: PhoneNormalizer? = null
+    private val normalizer: PhoneNormalizer
+        get() = cachedNormalizer?.takeIf { it.defaultRegion == region && it.format == _state.value.format }
+            ?: PhoneNormalizer(region, _state.value.format).also { cachedNormalizer = it }
 
     /** Set when the address book changed since the last scan (here or in any other app). */
     @Volatile
     private var contactsChanged = false
 
+    /** When this app last wrote to the contacts; changes right after that are its own. */
+    @Volatile
+    private var lastOwnWrite = 0L
+
     private val contactsObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
         override fun onChange(selfChange: Boolean) {
-            contactsChanged = true
+            // Our own writes are already followed by a rescan; only changes from elsewhere count.
+            if (System.currentTimeMillis() - lastOwnWrite > OWN_WRITE_GRACE_MS) contactsChanged = true
         }
     }
 
@@ -155,6 +171,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Puts archived contacts back in the address book. */
     fun restore(ids: Set<Long>) = work("משחזר מהארכיון…") {
         val items = _state.value.archived.filter { it.id in ids }
+        lastOwnWrite = System.currentTimeMillis()
         withContext(Dispatchers.IO) {
             // In parts, like applying: each part's snapshots are loaded only while it is restored.
             items.chunked(PART_SIZE).forEach { part ->
@@ -243,7 +260,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val repository = ContactsRepository(resolver)
             val loaded = repository.loadAll()
             region = RegionGuess.best(loaded.flatMap { c -> c.phones.map { it.number } }, regionCandidates)
-            val normalizer = PhoneNormalizer(region, _state.value.format)
+            // Picked now that the country is known (the property, not the one read before it was).
+            val normalizer = this@MainViewModel.normalizer
             val contacts = repository.withActivity(loaded, normalizer, readCallLog)
             ContactAnalyzer(normalizer).analyze(contacts, withActivity = true)
         }
@@ -319,6 +337,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             Action.ARCHIVE_CONTACTS -> "${category.title}: ארכיון"
             else -> "${category.title}: מחיקה"
         }
+        lastOwnWrite = System.currentTimeMillis()
         // Big selections go in parts: each part's snapshot (whole contacts,
         // photos included) is held in memory while it is written, so parts
         // keep that small however many items were ticked.
@@ -343,6 +362,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             _state.update { it.copy(message = "לא היה מה לתקן") }
             return
         }
+        lastOwnWrite = System.currentTimeMillis()
         rescan()
 
         // Check the result against the phone itself: a fresh scan should no
@@ -363,11 +383,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun undo(run: ChangeRun) = work("מבטל…") {
+        lastOwnWrite = System.currentTimeMillis()
         withContext(Dispatchers.IO) {
             ContactsWriter(resolver, normalizer).undo(changeLog.withSnapshot(run))
             changeLog.markUndone(run.id)
             archive.removeRun(run.id)
         }
+        lastOwnWrite = System.currentTimeMillis()
         _state.update { it.copy(message = "השינויים של \"${run.title}\" בוטלו") }
         reloadLog()
         reloadArchive()
@@ -416,6 +438,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private companion object {
         /** Items per change-log run; see [applyNow]. */
         const val PART_SIZE = 200
+
+        /** How long after its own write the app ignores change notices. */
+        const val OWN_WRITE_GRACE_MS = 5_000L
 
         /** The one contact a contact-level issue is about. */
         fun contactOf(issue: Issue): Contact? = when (issue) {

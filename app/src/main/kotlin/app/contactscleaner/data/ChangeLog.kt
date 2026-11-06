@@ -64,7 +64,12 @@ class ChangeLog(context: Context) {
     fun withSnapshot(run: ChangeRun): ChangeRun = run.copy(before = snapshots.get(run.id.toString()))
 
     private fun save(runs: List<ChangeRun>) {
-        val kept = runs.take(MAX_RUNS)
+        // Newest first, as many as fit the count and the space for snapshots.
+        var bytes = 0L
+        val kept = runs.take(MAX_RUNS).takeWhile { run ->
+            bytes += snapshots.size(run.id.toString())
+            bytes <= MAX_SNAPSHOT_BYTES || run === runs.first()
+        }
         val array = JSONArray()
         kept.forEach { array.put(runToJson(it)) }
         dir.mkdirs()
@@ -112,6 +117,8 @@ class ChangeLog(context: Context) {
     )
 
     private companion object {
-        const val MAX_RUNS = 30
+        /** A fix over thousands of items is saved in parts of 200; this keeps all of them undoable. */
+        const val MAX_RUNS = 200
+        const val MAX_SNAPSHOT_BYTES = 300L * 1024 * 1024
     }
 }
