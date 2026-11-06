@@ -809,7 +809,7 @@ private fun LogScreen(state: UiState, vm: MainViewModel) {
                             style = MaterialTheme.typography.labelMedium,
                         )
                     }
-                    Text("${run.lines.size} שינויים" + if (run.undone) " · בוטל" else "", style = MaterialTheme.typography.labelMedium)
+                    Text(count(run.lines.size, "שינוי אחד", "שינויים") + if (run.undone) " · בוטל" else "", style = MaterialTheme.typography.labelMedium)
                     run.verification?.let {
                         Text("✓ $it", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                     }
