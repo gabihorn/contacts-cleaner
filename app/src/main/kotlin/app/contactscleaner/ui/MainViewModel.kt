@@ -6,6 +6,7 @@ import android.net.Uri
 import android.telephony.TelephonyManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import app.contactscleaner.CrashLog
 import app.contactscleaner.core.AnalysisReport
 import app.contactscleaner.core.Contact
 import app.contactscleaner.core.ContactAnalyzer
@@ -54,6 +55,8 @@ data class UiState(
     /** When the report was made; "inactive" ages are measured from it. */
     val scannedAt: Long = 0,
     val archived: List<ArchivedContact> = emptyList(),
+    /** Details of the last crash, if the app closed unexpectedly last time. */
+    val crash: String? = null,
     /** Issues the user said are fine as they are; never shown again until "show hidden". */
     val ignored: Set<String> = emptySet(),
 ) {
@@ -81,6 +84,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         UiState(
             format = prefs.getString("format", null)?.let(PhoneFormat::valueOf) ?: PhoneFormat.E164,
             ignored = prefs.getStringSet("ignored", null).orEmpty().toSet(),
+            crash = CrashLog.read(app),
         )
     )
     val state: StateFlow<UiState> = _state
@@ -105,7 +109,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun restore(ids: Set<Long>) = work("משחזר מהארכיון…") {
         val items = _state.value.archived.filter { it.id in ids }
         withContext(Dispatchers.IO) {
-            ContactsWriter(resolver, normalizer).restore(items.map { it.raws })
+            ContactsWriter(resolver, normalizer).restore(archive.withRaws(items).map { it.raws })
             archive.remove(ids)
         }
         _state.update { it.copy(message = "${items.size} אנשי קשר חזרו לטלפון") }
@@ -156,6 +160,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Hides what is ticked in [category]. */
     fun ignoreSelected(category: Category) =
         ignore(_state.value.issuesIn(category).map { it.id }.filter { it in _state.value.selected })
+
+    fun dismissCrash() {
+        CrashLog.clear(getApplication())
+        _state.update { it.copy(crash = null) }
+    }
 
     fun showIgnored() {
         _state.update { it.copy(ignored = emptySet()) }
@@ -235,6 +244,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun preview(issue: Issue.MissingAreaCode, areaCode: String): String? =
         normalizer.withAreaCode(issue.phone.number, areaCode)
 
+    fun showMessage(text: String) = _state.update { it.copy(message = text) }
+
     fun dismissMessage() = _state.update { it.copy(message = null) }
 
     fun apply(category: Category, action: Action) =
@@ -278,7 +289,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun undo(run: ChangeRun) = work("מבטל…") {
         withContext(Dispatchers.IO) {
-            ContactsWriter(resolver, normalizer).undo(run)
+            ContactsWriter(resolver, normalizer).undo(changeLog.withSnapshot(run))
             changeLog.markUndone(run.id)
             archive.removeRun(run.id)
         }
@@ -304,6 +315,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             _state.update { it.copy(busy = label) }
             try {
                 block()
+            } catch (e: OutOfMemoryError) {
+                _state.update { it.copy(message = "אין מספיק זיכרון לפעולה הזו. נסו לסמן פחות פריטים בכל פעם.") }
             } catch (e: Exception) {
                 _state.update { it.copy(message = "שגיאה: ${e.message ?: e.javaClass.simpleName}") }
             } finally {

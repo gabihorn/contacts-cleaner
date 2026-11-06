@@ -63,7 +63,6 @@ import app.contactscleaner.core.Contact
 import app.contactscleaner.core.DuplicateReason
 import app.contactscleaner.core.IdleFilter
 import app.contactscleaner.core.LineType
-import app.contactscleaner.core.MimeTypes
 import app.contactscleaner.core.NameProblem
 import app.contactscleaner.core.PhoneTypes
 import app.contactscleaner.core.Issue
@@ -216,6 +215,25 @@ private fun HomeScreen(state: UiState, vm: MainViewModel) {
                 }
             }
             return@LazyColumn
+        }
+
+        state.crash?.let { details ->
+            item {
+                val clipboard = LocalContext.current.getSystemService(android.content.ClipboardManager::class.java)
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("האפליקציה נסגרה בפעם הקודמת", style = MaterialTheme.typography.titleMedium)
+                        Text("אפשר להעתיק את פרטי השגיאה ולשלוח אותם, כדי שנוכל לתקן.", style = MaterialTheme.typography.bodySmall)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = {
+                                clipboard?.setPrimaryClip(android.content.ClipData.newPlainText("פרטי שגיאה", details))
+                                vm.showMessage("פרטי השגיאה הועתקו")
+                            }) { Text("העתק פרטי שגיאה") }
+                            TextButton(onClick = vm::dismissCrash) { Text("סגור") }
+                        }
+                    }
+                }
+            }
         }
 
         item {
@@ -853,8 +871,7 @@ private fun ArchiveScreen(state: UiState, vm: MainViewModel) {
                         })
                         Column(Modifier.weight(1f)) {
                             Title(item.title)
-                            val phones = item.raws.flatMap { r -> r.rows.filter { it.mimeType == MimeTypes.PHONE }.mapNotNull { it.data1 } }
-                            if (phones.isNotEmpty()) Text(phones.distinct().joinToString(", ") { ltr(it) }, style = MaterialTheme.typography.bodySmall)
+                            if (item.phones.isNotEmpty()) Text(item.phones.joinToString(", ") { ltr(it) }, style = MaterialTheme.typography.bodySmall)
                             Text(
                                 "הועבר לארכיון: " + Instant.ofEpochMilli(item.archivedAt).atZone(ZoneId.systemDefault()).format(timeFormat),
                                 style = MaterialTheme.typography.labelSmall,
