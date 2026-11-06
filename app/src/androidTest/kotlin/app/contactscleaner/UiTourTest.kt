@@ -122,6 +122,10 @@ class UiTourTest {
     private fun waitForText(text: String, timeout: Long = 30_000) =
         compose.waitUntil(timeout) { compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
 
+    /** Waits for a message at the bottom to go, so it doesn't sit over the next button. */
+    private fun waitGone(text: String) =
+        compose.waitUntil(15_000) { compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isEmpty() }
+
     private fun back() = scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
 
     @Test
@@ -175,6 +179,7 @@ class UiTourTest {
         // Change log after it.
         back()
         waitForText("זה מה שאפשר לסדר")
+        waitGone("אומת")
         compose.onNode(hasScrollAction()).performScrollToNode(hasText("יומן שינויים", substring = true))
         compose.onNodeWithText("יומן שינויים", substring = true).performClick()
         waitForText("ביטול השינויים")

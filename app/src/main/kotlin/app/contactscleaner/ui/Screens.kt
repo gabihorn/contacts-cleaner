@@ -374,7 +374,7 @@ private fun CategoryScreen(category: Category, state: UiState, vm: MainViewModel
                 }
             }
         }
-        if (selectable) {
+        if (selectable && issues.isNotEmpty()) {
             Surface(tonalElevation = 3.dp) {
                 Row(
                     Modifier.fillMaxWidth().padding(16.dp).navigationBarsPadding(),
