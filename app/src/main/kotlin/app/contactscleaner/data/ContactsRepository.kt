@@ -32,7 +32,47 @@ class ContactsRepository(private val resolver: ContentResolver) {
         adapters.map { it.accountType }.toSet() - writable
     }
 
-    private fun editable(accountType: String?) = accountType == null || accountType !in readOnlyAccountTypes
+    /**
+     * Raw contacts that belong to a messaging app (Telegram, Plus, WhatsApp,
+     * Signal …), not to the user. Such an app keeps its own copy of everyone
+     * on it: a name plus its private rows (the "chat in the app" button), with
+     * the number inside those rows rather than as a phone number. Seen as the
+     * user's contact it looks empty, and anything changed in it is overwritten
+     * by the app's next sync, so the app's copies are left out entirely.
+     *
+     * A copy is the app's if its account type is a known messenger's or can't
+     * sync back, or if it has private app rows but no phone or email of its
+     * own (and isn't in a Google account).
+     */
+    private val appOwnedRaws: Set<Long> by lazy {
+        val typeOf = HashMap<Long, String?>()
+        val withPrivateRows = HashSet<Long>()
+        val withPhoneOrEmail = HashSet<Long>()
+        resolver.query(
+            Data.CONTENT_URI,
+            arrayOf(Data.RAW_CONTACT_ID, Data.MIMETYPE, RawContacts.ACCOUNT_TYPE),
+            null, null, null,
+        )?.use { c ->
+            while (c.moveToNext()) {
+                val raw = c.getLong(0)
+                val mime = c.getString(1)
+                typeOf[raw] = c.getString(2)
+                when (mime) {
+                    Phone.CONTENT_ITEM_TYPE, Email.CONTENT_ITEM_TYPE -> withPhoneOrEmail += raw
+                    !in MimeTypes.STANDARD -> withPrivateRows += raw
+                }
+            }
+        }
+        typeOf.filter { (raw, type) ->
+            isAppAccount(type) ||
+                (raw in withPrivateRows && raw !in withPhoneOrEmail && type != MimeTypes.GOOGLE_ACCOUNT)
+        }.keys
+    }
+
+    private fun isAppAccount(type: String?): Boolean {
+        if (type == null) return false
+        return type in readOnlyAccountTypes || type in MESSENGER_ACCOUNT_TYPES || "telegram" in type.lowercase()
+    }
 
     private class Builder(val id: Long) {
         var name: NameEntry? = null
@@ -46,6 +86,14 @@ class ContactsRepository(private val resolver: ContentResolver) {
 
     private companion object {
         val WHATSAPP_ACCOUNT_TYPES = listOf("com.whatsapp", "com.whatsapp.w4b")
+
+        /** Messaging apps known to keep their own copies of contacts. */
+        val MESSENGER_ACCOUNT_TYPES = setOf(
+            "com.whatsapp", "com.whatsapp.w4b",
+            "org.telegram.messenger", "org.telegram.plus", "org.thunderdog.challegram", "com.teleglatt",
+            "org.thoughtcrime.securesms", "com.viber.voip", "com.viber.voip.account",
+            "ch.threema.app", "com.skype.raider", "com.skype.contacts.sync", "jp.naver.line.android",
+        )
     }
 
     fun loadAll(): List<Contact> {
@@ -68,11 +116,12 @@ class ContactsRepository(private val resolver: ContentResolver) {
             RawContacts.ACCOUNT_TYPE,
         )
         val selection = "${Data.MIMETYPE} IN (${mimeTypes.joinToString { "?" }})"
+        val skip = appOwnedRaws
 
         val contacts = LinkedHashMap<Long, Builder>()
         resolver.query(Data.CONTENT_URI, projection, selection, mimeTypes, "${Data.CONTACT_ID} ASC")?.use { c ->
             while (c.moveToNext()) {
-                if (!editable(c.getString(7))) continue
+                if (c.getLong(2) in skip) continue
                 val dataId = c.getLong(0)
                 val contactId = c.getLong(1)
                 val b = contacts.getOrPut(contactId) { Builder(contactId) }

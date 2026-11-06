@@ -139,6 +139,52 @@ class StorageAndDeleteOnDeviceTest {
         assertTrue("not a repeat", repeats.isEmpty())
     }
 
+    /** What a user saw: Telegram's (Plus's) own copy of a person showed up as an "empty contact". */
+    @Test
+    fun messengerCopiesAreNotTheUsersContacts() {
+        fun insert(accountType: String?, name: String, phone: String?, privateRow: String?): Long {
+            val ops = arrayListOf(
+                ContentProviderOperation.newInsert(RawContacts.CONTENT_URI)
+                    .withValue(RawContacts.ACCOUNT_TYPE, accountType)
+                    .withValue(RawContacts.ACCOUNT_NAME, accountType?.let { "+972500000000" })
+                    .build(),
+                ContentProviderOperation.newInsert(Data.CONTENT_URI)
+                    .withValueBackReference(Data.RAW_CONTACT_ID, 0)
+                    .withValue(Data.MIMETYPE, StructuredName.CONTENT_ITEM_TYPE)
+                    .withValue(StructuredName.DISPLAY_NAME, name)
+                    .build(),
+            )
+            if (phone != null) {
+                ops += ContentProviderOperation.newInsert(Data.CONTENT_URI)
+                    .withValueBackReference(Data.RAW_CONTACT_ID, 0)
+                    .withValue(Data.MIMETYPE, Phone.CONTENT_ITEM_TYPE)
+                    .withValue(Phone.NUMBER, phone)
+                    .build()
+            }
+            if (privateRow != null) {
+                ops += ContentProviderOperation.newInsert(Data.CONTENT_URI)
+                    .withValueBackReference(Data.RAW_CONTACT_ID, 0)
+                    .withValue(Data.MIMETYPE, privateRow)
+                    .withValue(Data.DATA1, "12345")
+                    .withValue(Data.DATA3, "Chat")
+                    .build()
+            }
+            return ContentUris.parseId(resolver.applyBatch(ContactsContract.AUTHORITY, ops)[0].uri!!).also { created += it }
+        }
+        val telegram = insert("org.telegram.plus", "שרי אריאלי", null, "vnd.android.cursor.item/vnd.org.telegram.messenger.android.profile")
+        val unknownApp = insert("com.example.chat", "רינה בן דוד", null, "vnd.android.cursor.item/vnd.com.example.chat.profile")
+        val mine = insert(null, "אסתר לוי", "+972541112233", null)
+
+        val contacts = ContactsRepository(resolver).loadAll()
+        val raws = contacts.flatMap { it.rawContactIds }.toSet()
+        assertTrue("Telegram's copy is left out", telegram !in raws)
+        assertTrue("an unknown messenger's copy is left out too", unknownApp !in raws)
+        assertTrue("the user's own contact is kept", mine in raws)
+
+        val empty = ContactAnalyzer(normalizer).analyze(contacts).ofType<Issue.EmptyContact>()
+        assertTrue("no app copy shows as empty", empty.none { it.contact.displayName == "שרי אריאלי" || it.contact.displayName == "רינה בן דוד" })
+    }
+
     /** A log full of big snapshots (photos) loads its index without loading them. */
     @Test
     fun bigChangeLogStaysLight() {
