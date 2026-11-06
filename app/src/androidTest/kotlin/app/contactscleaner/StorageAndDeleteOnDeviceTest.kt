@@ -152,7 +152,7 @@ class StorageAndDeleteOnDeviceTest {
             log.add(ChangeRun(id = i.toLong() + 1, time = i.toLong(), title = "ריצה $i", lines = listOf("שורה"), before = raws))
         }
         val runs = log.all()
-        assertEquals("keeps the latest 30", 30, runs.size)
+        assertEquals("keeps all 40 (the limit is 200)", 40, runs.size)
         assertTrue("the list carries no snapshots", runs.all { it.before.isEmpty() })
         val newest = log.withSnapshot(runs.first())
         assertEquals(5, newest.before.size)
