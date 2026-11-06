@@ -350,8 +350,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val chosenIds = chosen.map { it.id }.toSet()
         val left = _state.value.report?.issues.orEmpty().count { it.id in chosenIds }
         val done = chosenIds.size - left
-        val verification = if (left == 0) "אומתו כל $done השינויים בסריקה חוזרת"
-        else "אומתו $done מתוך ${chosenIds.size}. $left עדיין מופיעים ברשימה ולא השתנו"
+        val verification = when {
+            left == 0 && done == 1 -> "השינוי אומת בסריקה חוזרת"
+            left == 0 -> "כל $done השינויים אומתו בסריקה חוזרת"
+            left == 1 -> "אומתו $done מתוך ${chosenIds.size}. פריט אחד עדיין מופיע ברשימה ולא השתנה"
+            else -> "אומתו $done מתוך ${chosenIds.size}. $left פריטים עדיין מופיעים ברשימה ולא השתנו"
+        }
         withContext(Dispatchers.IO) { runs.forEach { changeLog.update(it.copy(verification = verification)) } }
         _state.update { it.copy(message = verification) }
         reloadLog()

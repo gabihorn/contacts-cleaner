@@ -26,6 +26,19 @@ class SimilarNameDuplicatesTest {
     }
 
     @Test
+    fun `same number and the same name in another language is certain`() {
+        val dup = groups(contact("משה כהן", "052-8123456"), contact("Moshe Cohen", "+972 52-812-3456")).single()
+        assertTrue(DuplicateReason.SAME_PHONE in dup.reasons)
+        assertTrue(dup.confident)
+    }
+
+    @Test
+    fun `same number but different people is not certain`() {
+        val dup = groups(contact("משה כהן", "02-5801234"), contact("רחל לוי", "025801234")).single()
+        assertFalse(dup.confident)
+    }
+
+    @Test
     fun `nickname and one-letter difference`() {
         assertEquals(1, groups(contact("יוסי לוי", "0528111111"), contact("יוסף לוי", "0528222222")).size)
         assertEquals(1, groups(contact("אבי כהן", "0528111111"), contact("אביב כהן", "0528222222")).size)

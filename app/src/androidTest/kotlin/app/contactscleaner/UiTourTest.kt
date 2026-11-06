@@ -130,10 +130,20 @@ class UiTourTest {
         waitForText("זה מה שאפשר לסדר")
         shot("01-home")
 
-        // Duplicates.
+        // Duplicates: both pairs are certain, so "select only certain ones" ticks both.
         compose.onNodeWithText("אנשי קשר כפולים").performClick()
         waitForText("שם אחרי האיחוד")
+        compose.onNodeWithText("סמן רק ודאיים").performClick()
         shot("02-duplicates")
+        compose.onNodeWithText("תיקון", substring = true).performClick()
+        waitForText("ביצוע")
+        compose.onNodeWithText("ביצוע").performClick()
+        waitForText("סיימת כאן")
+        shot("02b-after-merge")
+        val repository = ContactsRepository(resolver)
+        val names = repository.loadAll().mapNotNull { it.displayName }
+        assertTrue("one משה כהן left", names.count { it == "משה כהן" || it == "Moshe Cohen" } == 1)
+        assertTrue("one יוסי/יוסף left", names.count { it == "יוסי לוי" || it == "יוסף לוי" } == 1)
         back()
 
         // Tags in names.
@@ -167,7 +177,7 @@ class UiTourTest {
         waitForText("זה מה שאפשר לסדר")
         compose.onNode(hasScrollAction()).performScrollToNode(hasText("יומן שינויים", substring = true))
         compose.onNodeWithText("יומן שינויים", substring = true).performClick()
-        waitForText("אומתו")
+        waitForText("ביטול השינויים")
         shot("07-log")
     }
 }

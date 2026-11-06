@@ -278,7 +278,7 @@ private fun HomeScreen(state: UiState, vm: MainViewModel) {
                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                     )
                     if (chosen > 0) {
-                        Text("$chosen מסומנים", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                        Text(count(chosen, "אחד מסומן", "מסומנים"), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                     }
                 }
             }
@@ -351,7 +351,7 @@ private fun CategoryScreen(category: Category, state: UiState, vm: MainViewModel
                         TextButton(onClick = vm::selectConfidentDuplicates) { Text("סמן רק ודאיים") }
                     }
                     if (chosen > 0) {
-                        TextButton(onClick = { vm.ignoreSelected(category) }) { Text("לא להציג שוב ($chosen)") }
+                        TextButton(onClick = { vm.ignoreSelected(category) }) { Text("הסתרת המסומנים ($chosen)") }
                     }
                     TextButton(onClick = { exportList.launch(csvFileName()) }) { Text("ייצוא הרשימה") }
                 }
@@ -391,7 +391,7 @@ private fun CategoryScreen(category: Category, state: UiState, vm: MainViewModel
                             enabled = enabled,
                             modifier = Modifier.weight(1f),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                        ) { Text("מחיקת $chosen מספרים") }
+                        ) { Text("מחיקת " + count(chosen, "מספר אחד", "מספרים")) }
                     }
                     if (category.archives) {
                         OutlinedButton(
@@ -406,7 +406,7 @@ private fun CategoryScreen(category: Category, state: UiState, vm: MainViewModel
                             enabled = enabled,
                             modifier = Modifier.weight(1f),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                        ) { Text(if (category.archives) "מחיקה $chosen" else "מחיקת $chosen אנשי קשר") }
+                        ) { Text(if (category.archives) "מחיקה $chosen" else "מחיקת " + count(chosen, "איש קשר אחד", "אנשי קשר")) }
                     }
                 }
             }
@@ -419,10 +419,10 @@ private fun CategoryScreen(category: Category, state: UiState, vm: MainViewModel
             title = {
                 Text(
                     when (action) {
-                        Action.FIX -> "לבצע $chosen תיקונים?"
-                        Action.DELETE_NUMBERS -> "למחוק $chosen מספרים?"
-                        Action.DELETE_CONTACTS -> "למחוק $chosen אנשי קשר?"
-                        Action.ARCHIVE_CONTACTS -> "להעביר $chosen אנשי קשר לארכיון?"
+                        Action.FIX -> "לבצע " + count(chosen, "תיקון אחד", "תיקונים") + "?"
+                        Action.DELETE_NUMBERS -> "למחוק " + count(chosen, "מספר אחד", "מספרים") + "?"
+                        Action.DELETE_CONTACTS -> "למחוק " + count(chosen, "איש קשר אחד", "אנשי קשר") + "?"
+                        Action.ARCHIVE_CONTACTS -> "להעביר " + count(chosen, "איש קשר אחד", "אנשי קשר") + " לארכיון?"
                     }
                 )
             },
@@ -567,7 +567,7 @@ private fun IssueCard(issue: Issue, state: UiState, vm: MainViewModel, selectabl
                         val context = LocalContext.current
                         TextButton(onClick = { openContact(context, single.id) }) { Text("פתח באנשי קשר") }
                     }
-                    TextButton(onClick = { vm.ignore(listOf(issue.id)) }) { Text("לא להציג שוב") }
+                    TextButton(onClick = { vm.ignore(listOf(issue.id)) }) { Text("הסתר") }
                 }
             }
         }

@@ -177,10 +177,23 @@ class ContactAnalyzer(
      * ("Moshe" / "Moshe Cohen"). "Moshe Cohen" vs "Rachel Cohen" is not.
      */
     private fun namesCompatible(group: List<Contact>): Boolean {
-        val tokenSets = group
-            .mapNotNull { it.displayName?.takeUnless(Names::looksLikePhoneOrEmail) }
-            .mapNotNull { Names.matchKey(it)?.split(' ')?.toSet() }
-        return tokenSets.all { a -> tokenSets.all { b -> a.containsAll(b) || b.containsAll(a) } }
+        val names = group.mapNotNull { it.displayName?.takeUnless(Names::looksLikePhoneOrEmail) }
+        return names.all { a -> names.all { b -> sameOrPart(a, b) } }
+    }
+
+    /**
+     * One name is the other, part of it ("Moshe" / "Moshe Cohen"), or the
+     * same name spelled another way ("משה כהן" / "Moshe Cohen", "יוסי" / "יוסף").
+     */
+    private fun sameOrPart(a: String, b: String): Boolean {
+        val ta = Names.matchKey(a)?.split(' ')?.toSet() ?: return true
+        val tb = Names.matchKey(b)?.split(' ')?.toSet() ?: return true
+        if (ta.containsAll(tb) || tb.containsAll(ta)) return true
+        val strictA = Phonetic.key(a)
+        val strictB = Phonetic.key(b)
+        if (strictA != null && strictA == strictB) return true
+        val looseA = Phonetic.key(a, loose = true)
+        return looseA != null && looseA == Phonetic.key(b, loose = true)
     }
 
     fun mergePreview(group: List<Contact>): MergePreview {
