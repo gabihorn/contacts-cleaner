@@ -61,6 +61,7 @@ jobs:
 
   # Runs the real merge, fix and undo against Android's contacts database on an emulator.
   device-test:
+    needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -85,11 +86,13 @@ jobs:
           api-level: 34
           arch: x86_64
           disable-animations: true
-          script: ./gradlew :app:connectedDebugAndroidTest
+          script: bash .github/scripts/device-test.sh
 
-      - name: Keep the test report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: device-test-report
-          path: app/build/reports/androidTests/
+      # Screenshots of each screen, attached to this build's release.
+      - name: Attach screenshots to the release
+        if: always() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls screens/*.png >/dev/null 2>&1 || exit 0
+          gh release upload "build-${GITHUB_RUN_NUMBER}" screens/*.png --clobber
