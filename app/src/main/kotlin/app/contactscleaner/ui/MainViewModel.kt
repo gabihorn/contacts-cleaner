@@ -263,7 +263,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 ?.also { run ->
                     if (action == Action.ARCHIVE_CONTACTS) {
                         archive.add(chosen.mapNotNull(::contactOf).map { c ->
-                            ArchivedContact(c.id, c.title, now, run.id, run.before.filter { it.id in c.rawContactIds })
+                            ArchivedContact(c.id, c.title, now, run.id, raws = run.before.filter { it.id in c.rawContactIds })
                         })
                     }
                 }
