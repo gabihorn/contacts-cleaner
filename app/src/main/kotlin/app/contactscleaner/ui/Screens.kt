@@ -80,6 +80,9 @@ import java.time.format.DateTimeFormatter
 /** Keeps numbers and emails left-to-right inside Hebrew text. */
 private fun ltr(text: String) = "⁦$text⁩"
 
+/** Keeps a phone number on one line: no wrap at its spaces or hyphens. */
+private fun unbreakable(text: String) = text.replace(' ', ' ').replace('-', '‑')
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun App(vm: MainViewModel) {
@@ -732,7 +735,7 @@ private fun IssueBody(issue: Issue, state: UiState, vm: MainViewModel) {
             HorizontalDivider(Modifier.padding(vertical = 4.dp))
             val details = issue.merged.phones + issue.merged.emails
             if (details.isNotEmpty()) {
-                Text("אחרי האיחוד יישארו: " + details.joinToString(", ") { ltr(it) }, style = small)
+                Text("אחרי האיחוד יישארו: " + details.joinToString(", ") { ltr(unbreakable(it)) }, style = small)
             }
             MergeNamePicker(issue, state, vm)
         }
