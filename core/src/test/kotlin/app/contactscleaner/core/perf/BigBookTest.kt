@@ -3,6 +3,7 @@ package app.contactscleaner.core.perf
 import app.contactscleaner.core.Contact
 import app.contactscleaner.core.ContactAnalyzer
 import app.contactscleaner.core.EmailEntry
+import app.contactscleaner.core.Issue
 import app.contactscleaner.core.NameEntry
 import app.contactscleaner.core.PhoneEntry
 import app.contactscleaner.core.PhoneNormalizer
@@ -49,5 +50,13 @@ class BigBookTest {
         val seconds = (System.nanoTime() - start) / 1e9
         println("SCAN 24k: %.2f s, %d issues".format(seconds, report.issues.size))
         assertTrue(seconds < 20, "took $seconds s")
+    }
+
+    @Test
+    fun `common names never chain into a huge duplicates group`() {
+        // A group of 1,428 "duplicates" made of similar names ran the phone out of memory (0.2.31).
+        val report = ContactAnalyzer(PhoneNormalizer("IL")).analyze(book(24_000), withActivity = true)
+        val biggest = report.issues.filterIsInstance<Issue.Duplicates>().maxOfOrNull { it.contacts.size } ?: 0
+        assertTrue(biggest <= 10, "biggest group has $biggest contacts")
     }
 }

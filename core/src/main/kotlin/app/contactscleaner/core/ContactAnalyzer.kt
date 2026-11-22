@@ -168,12 +168,31 @@ class ContactAnalyzer(
             reasonsByGroup.getOrPut(find(a)) { mutableSetOf() } += reason
         }
 
-        return contacts.indices.groupBy { find(it) }.values
-            .filter { it.size > 1 }
-            .mapNotNull { members ->
+        // Strong reasons (number, email) per group of the second grouping, for
+        // groups that are too big to show whole; see below.
+        val strongReasons = HashMap<Int, MutableSet<DuplicateReason>>()
+        for ((a, _, reason) in links) {
+            if (reason == DuplicateReason.SAME_PHONE || reason == DuplicateReason.SAME_EMAIL) {
+                strongReasons.getOrPut(find(a, strongParent)) { mutableSetOf() } += reason
+            }
+        }
+
+        val groups = contacts.indices.groupBy { find(it) }.values.filter { it.size > 1 }.flatMap { members ->
+            if (members.size <= MAX_GROUP) return@flatMap listOf(members to reasonsByGroup.getValue(find(members.first())))
+            // Names alike chain on and on ("דוד כהן" ~ "דוד כהנא" ~ …) into groups
+            // of hundreds that are no one person, and showing one such group
+            // ran the app out of memory. Keep only what numbers and emails
+            // hold together, in groups of a sensible size.
+            members.groupBy { find(it, strongParent) }.values
+                .filter { it.size in 2..MAX_GROUP }
+                .map { it to strongReasons[find(it.first(), strongParent)].orEmpty() }
+        }
+
+        return groups
+            .mapNotNull { (members, groupReasons) ->
                 val group = members.map { contacts[it] }
                 // "Similar" adds nothing when the names are already the same.
-                val reasons = reasonsByGroup.getValue(find(members.first())).let {
+                val reasons = groupReasons.let {
                     if (DuplicateReason.SAME_NAME in it) it - DuplicateReason.SIMILAR_NAME else it
                 }
                 val connectedByNumbers = members.map { find(it, strongParent) }.distinct().size == 1
@@ -187,6 +206,12 @@ class ContactAnalyzer(
     private companion object {
         /** Bigger groups held together by names alone are dropped; see [findDuplicates]. */
         const val MAX_NAME_ONLY_GROUP = 4
+
+        /**
+         * Bigger groups are split into what numbers and emails alone hold
+         * together, and parts still bigger are left out; see [findDuplicates].
+         */
+        const val MAX_GROUP = 10
     }
 
     /**

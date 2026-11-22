@@ -144,7 +144,8 @@ sealed interface Issue {
          */
         val confident: Boolean,
     ) : Issue {
-        override val id get() = "dup:" + contacts.map { it.id }.sorted().joinToString(",")
+        // Worked out once: the list reads it for every row on every redraw.
+        override val id = "dup:" + contacts.map { it.id }.sorted().joinToString(",")
     }
 }
 
