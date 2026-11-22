@@ -2,6 +2,7 @@ package app.contactscleaner.data
 
 import android.content.ContentResolver
 import android.provider.CallLog
+import android.provider.Telephony
 import android.provider.ContactsContract
 import android.provider.ContactsContract.CommonDataKinds.Email
 import android.provider.ContactsContract.CommonDataKinds.Organization
@@ -18,6 +19,7 @@ import app.contactscleaner.core.NameEntry
 import app.contactscleaner.core.PhoneEntry
 import app.contactscleaner.core.PhoneNormalizer
 import app.contactscleaner.core.RawContact
+import app.contactscleaner.core.TextMessage
 
 /** Reads the phone's address book into [Contact]s. */
 class ContactsRepository(private val resolver: ContentResolver) {
@@ -200,12 +202,41 @@ class ContactsRepository(private val resolver: ContentResolver) {
             while (c.moveToNext()) {
                 val number = c.getString(0)?.takeIf { it.isNotBlank() } ?: continue
                 val type = c.getInt(2)
-                val talked = (type == CallLog.Calls.INCOMING_TYPE || type == CallLog.Calls.OUTGOING_TYPE) && c.getLong(3) > 0
-                out += CallEntry(number, c.getLong(1), talked, c.getString(4))
+                val seconds = c.getLong(3)
+                val talked = (type == CallLog.Calls.INCOMING_TYPE || type == CallLog.Calls.OUTGOING_TYPE) && seconds > 0
+                out += CallEntry(number, c.getLong(1), talked, c.getString(4), type == CallLog.Calls.INCOMING_TYPE, seconds)
             }
         }
         out
     }.getOrDefault(emptyList())
+
+    /**
+     * The last [perNumber] text messages with each of [keys] (numbers in
+     * [PhoneNormalizer.key] form) since [since], newest first. Empty without
+     * permission.
+     */
+    fun messages(keys: Set<String>, normalizer: PhoneNormalizer, since: Long, perNumber: Int = 3): Map<String, List<TextMessage>> = runCatching {
+        val out = HashMap<String, MutableList<TextMessage>>()
+        if (keys.isEmpty()) return@runCatching out
+        val keyOf = HashMap<String, String?>()
+        resolver.query(
+            Telephony.Sms.CONTENT_URI,
+            arrayOf(Telephony.Sms.ADDRESS, Telephony.Sms.BODY, Telephony.Sms.DATE, Telephony.Sms.TYPE),
+            "${Telephony.Sms.DATE} >= ?",
+            arrayOf(since.toString()),
+            "${Telephony.Sms.DATE} DESC",
+        )?.use { c ->
+            while (c.moveToNext()) {
+                val address = c.getString(0) ?: continue
+                val key = keyOf.getOrPut(address) { normalizer.key(address) }?.takeIf { it in keys } ?: continue
+                val list = out.getOrPut(key) { mutableListOf() }
+                if (list.size >= perNumber) continue
+                val body = c.getString(1)?.trim()?.takeIf { it.isNotEmpty() } ?: continue
+                list += TextMessage(body, c.getLong(2), c.getInt(3) == Telephony.Sms.MESSAGE_TYPE_INBOX)
+            }
+        }
+        out
+    }.getOrDefault(emptyMap())
 
     /**
      * The Google account most contacts are kept in, so a new contact syncs

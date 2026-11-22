@@ -313,8 +313,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val report = ContactAnalyzer(normalizer).analyze(contacts, withActivity = true)
             if (!readCallLog) report else {
                 val now = System.currentTimeMillis()
-                val calls = repository.calls(since = now - UnsavedCallers.DAYS * 24 * 60 * 60 * 1000)
-                report.copy(issues = report.issues + UnsavedCallers.find(calls, contacts, normalizer, now))
+                val since = now - UnsavedCallers.DAYS * 24 * 60 * 60 * 1000
+                val unsaved = UnsavedCallers.find(repository.calls(since), contacts, normalizer, now)
+                report.copy(issues = report.issues + withClues(unsaved, repository, normalizer, since))
             }
         }
         // Keep what the user ticked and typed for items still there; only items
@@ -330,6 +331,35 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 scannedAt = System.currentTimeMillis(),
             )
         }
+    }
+
+    /**
+     * Adds what may tell who an unsaved number is: the name it had in a
+     * contact the app archived, and the last text messages with it.
+     */
+    private fun withClues(
+        unsaved: List<Issue.FrequentUnsaved>,
+        repository: ContactsRepository,
+        normalizer: PhoneNormalizer,
+        since: Long,
+    ): List<Issue.FrequentUnsaved> {
+        if (unsaved.isEmpty()) return unsaved
+        val keys = unsaved.map { it.key }.toSet()
+        val archivedNames = HashMap<String, String>()
+        // Newest first, so the latest name a number had wins.
+        archive.all().sortedByDescending { it.archivedAt }.forEach { a ->
+            a.phones.mapNotNull { normalizer.key(it) }.filter { it in keys }.forEach { archivedNames.putIfAbsent(it, a.title) }
+        }
+        val messages = if (smsGranted()) repository.messages(keys, normalizer, since) else emptyMap()
+        return unsaved.map { it.copy(archivedName = archivedNames[it.key], messages = messages[it.key].orEmpty()) }
+    }
+
+    private fun smsGranted() =
+        getApplication<Application>().checkSelfPermission(android.Manifest.permission.READ_SMS) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+    /** Called when the SMS permission is answered on the "unsaved" screen; rescans to add the messages. */
+    fun onSmsPermission(granted: Boolean) {
+        if (granted && _state.value.report != null) scan()
     }
 
     /** Changing the filter clears the selection, so nothing hidden stays selected for deletion. */

@@ -37,6 +37,26 @@ class UnsavedCallersTest {
     }
 
     @Test
+    fun `talk time, direction and the usual time of day are summed up`() {
+        val zone = java.time.ZoneOffset.UTC
+        val morning = java.time.LocalDate.of(2026, 11, 1).atTime(9, 0).toInstant(zone).toEpochMilli()
+        val evening = java.time.LocalDate.of(2026, 11, 1).atTime(20, 0).toInstant(zone).toEpochMilli()
+        val at = morning + 20 * day
+        val entries = (1..4).map { CallEntry("0541111111", morning + it * day, true, incoming = it != 1, seconds = 60) } +
+            CallEntry("0541111111", evening, true, incoming = true, seconds = 30)
+        val found = UnsavedCallers.find(entries, emptyList(), normalizer, at, zone).single()
+        assertEquals(270, found.talkSeconds)
+        assertEquals(4, found.incoming)
+        assertEquals(1, found.outgoing)
+        assertEquals(DayPart.MORNING, found.usualTime)
+        // Spread evenly: no usual time.
+        val spread = UnsavedCallers.usualTime(
+            listOf(morning, morning, evening, evening).map { CallEntry("x", it, true) }, zone,
+        )
+        assertEquals(null, spread)
+    }
+
+    @Test
     fun `most called comes first`() {
         val found = UnsavedCallers.find(calls("0541111111", 4) + calls("0542222222", 8), emptyList(), normalizer, now)
         assertEquals(listOf(8, 4), found.map { it.calls })

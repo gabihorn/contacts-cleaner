@@ -143,6 +143,14 @@ sealed interface Issue {
         val lastCall: Long,
         /** The name the phone's caller ID showed, a starting point for the user. */
         val knownName: String?,
+        val talkSeconds: Long = 0,
+        val incoming: Int = 0,
+        val outgoing: Int = 0,
+        val usualTime: DayPart? = null,
+        /** The name it had in a contact the app archived (deleted) earlier. */
+        val archivedName: String? = null,
+        /** The latest text messages with the number, newest first. */
+        val messages: List<TextMessage> = emptyList(),
     ) : Issue {
         override val id get() = "unsaved:$key"
     }

@@ -65,6 +65,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.contactscleaner.core.Contact
+import app.contactscleaner.core.DayPart
 import app.contactscleaner.core.DuplicateKind
 import app.contactscleaner.core.DuplicateReason
 import app.contactscleaner.core.IdleFilter
@@ -362,6 +363,7 @@ private fun CategoryScreen(category: Category, state: UiState, vm: MainViewModel
         ) {
             item { Text(category.description, Modifier.padding(16.dp), style = MaterialTheme.typography.bodyMedium) }
             if (category == Category.INACTIVE) item { InactiveFilterPanel(state, vm) }
+            if (category == Category.UNSAVED) item { SmsPermissionPanel(vm) }
             if (category == Category.NAME_TAG) item { TagButtons(issues, vm) }
             if (category == Category.DUPLICATES) item { DuplicateTabs(state, vm) }
             if (selectable) item {
@@ -642,6 +644,45 @@ private fun QuickFixCard(state: UiState, vm: MainViewModel) {
     }
 }
 
+private fun shortDate(time: Long): String =
+    java.time.Instant.ofEpochMilli(time).atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+        .format(java.time.format.DateTimeFormatter.ofPattern("dd/MM"))
+
+/** e.g. "45 דקות בסך הכול · 3 נכנסות, 2 יוצאות · בדרך כלל בבוקר" */
+private fun callSummary(issue: Issue.FrequentUnsaved): String {
+    val minutes = (issue.talkSeconds + 59) / 60
+    val talk = if (minutes < 60) "$minutes דקות בסך הכול" else "%.1f שעות בסך הכול".format(minutes / 60.0)
+    val time = when (issue.usualTime) {
+        DayPart.MORNING -> " · בדרך כלל בבוקר"
+        DayPart.NOON -> " · בדרך כלל בצהריים"
+        DayPart.EVENING -> " · בדרך כלל בערב"
+        DayPart.NIGHT -> " · בדרך כלל בלילה"
+        null -> ""
+    }
+    return "$talk · ${issue.incoming} נכנסות, ${issue.outgoing} יוצאות$time"
+}
+
+/** On the "unsaved" screen: asks to read text messages, which often tell who a number is. */
+@Composable
+private fun SmsPermissionPanel(vm: MainViewModel) {
+    val context = LocalContext.current
+    var granted by remember {
+        mutableStateOf(context.checkSelfPermission(Manifest.permission.READ_SMS) == PackageManager.PERMISSION_GRANTED)
+    }
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        granted = it
+        vm.onSmsPermission(it)
+    }
+    if (granted) return
+    Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            "ההודעות האחרונות עם כל מספר עוזרות לזהות מי זה. בשביל זה צריך הרשאה לקרוא הודעות SMS. הן נקראות רק בטלפון ולא נשלחות לשום מקום.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        OutlinedButton(onClick = { launcher.launch(Manifest.permission.READ_SMS) }) { Text("הצגת הודעות SMS") }
+    }
+}
+
 /** Filters for the "inactive contacts" screen, plus asking for the call log when it's missing. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -890,21 +931,46 @@ private fun IssueBody(issue: Issue, state: UiState, vm: MainViewModel) {
             val context = LocalContext.current
             Title(ltr(issue.number))
             Text(
-                "${issue.calls} שיחות ב-3 החודשים האחרונים · אחרונה ${java.time.Instant.ofEpochMilli(issue.lastCall).atZone(java.time.ZoneId.systemDefault()).toLocalDate().format(java.time.format.DateTimeFormatter.ofPattern("dd/MM"))}",
+                "${issue.calls} שיחות ב-3 החודשים האחרונים · אחרונה ${shortDate(issue.lastCall)}",
                 style = small,
             )
+            Text(callSummary(issue), style = small)
+            issue.archivedName?.let { Text("היה שמור אצלך בעבר בשם \"$it\" (נמחק דרך האפליקציה)", style = small) }
+            issue.messages.forEach { msg ->
+                Card(
+                    Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (msg.incoming) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.secondaryContainer
+                    ),
+                ) {
+                    Column(Modifier.padding(8.dp)) {
+                        Text("${if (msg.incoming) "התקבלה" else "נשלחה"} · ${shortDate(msg.date)}", style = MaterialTheme.typography.labelSmall)
+                        Text(msg.body, style = MaterialTheme.typography.bodySmall, maxLines = 3)
+                    }
+                }
+            }
             OutlinedTextField(
-                value = state.inputs[issue.id] ?: issue.knownName.orEmpty(),
+                value = state.inputs[issue.id] ?: (issue.knownName ?: issue.archivedName).orEmpty(),
                 onValueChange = { vm.setInput(issue.id, it) },
                 label = { Text("שם לשמירה") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
-            TextButton(onClick = {
-                runCatching {
-                    context.startActivity(android.content.Intent(android.content.Intent.ACTION_DIAL, android.net.Uri.parse("tel:${issue.number}")))
-                }
-            }) { Text("חיוג") }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = {
+                    runCatching {
+                        context.startActivity(android.content.Intent(android.content.Intent.ACTION_DIAL, android.net.Uri.parse("tel:${issue.number}")))
+                    }
+                }) { Text("חיוג") }
+                // WhatsApp shows the name and photo the person chose, without saving the number first.
+                TextButton(onClick = {
+                    runCatching {
+                        context.startActivity(
+                            android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://wa.me/${issue.key.filter(Char::isDigit)}"))
+                        )
+                    }
+                }) { Text("מי זה בוואטסאפ") }
+            }
         }
         is Issue.EmptyContact -> Title(issue.contact.title)
         is Issue.Inactive -> {
