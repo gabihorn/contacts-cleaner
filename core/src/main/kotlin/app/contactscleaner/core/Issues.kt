@@ -132,6 +132,21 @@ sealed interface Issue {
         override val id get() = "inactive:${contact.id}"
     }
 
+    /**
+     * A number the user talks to often that no contact holds. Fixing it
+     * saves a new contact under the name the user types.
+     */
+    data class FrequentUnsaved(
+        val number: String,
+        val key: String,
+        val calls: Int,
+        val lastCall: Long,
+        /** The name the phone's caller ID showed, a starting point for the user. */
+        val knownName: String?,
+    ) : Issue {
+        override val id get() = "unsaved:$key"
+    }
+
     /** Several contacts that look like the same person. */
     data class Duplicates(
         val contacts: List<Contact>,
@@ -146,6 +161,15 @@ sealed interface Issue {
     ) : Issue {
         // Worked out once: the list reads it for every row on every redraw.
         override val id = "dup:" + contacts.map { it.id }.sorted().joinToString(",")
+
+        /** The strongest thing holding the group together; each group shows under one kind. */
+        val kind: DuplicateKind
+            get() = when {
+                DuplicateReason.SAME_PHONE in reasons -> DuplicateKind.PHONE
+                DuplicateReason.SAME_EMAIL in reasons -> DuplicateKind.EMAIL
+                DuplicateReason.SAME_NAME in reasons -> DuplicateKind.NAME
+                else -> DuplicateKind.SIMILAR
+            }
     }
 }
 
@@ -156,6 +180,14 @@ enum class DuplicateReason {
 
     /** Sounds alike: other spelling, other language, a nickname or a typo. Always worth a look. */
     SIMILAR_NAME,
+}
+
+/** How sure a duplicates group is, strongest first; the duplicates screen has a tab per kind. */
+enum class DuplicateKind {
+    PHONE,
+    EMAIL,
+    NAME,
+    SIMILAR,
 }
 
 /** What a group of duplicates would look like after merging. */

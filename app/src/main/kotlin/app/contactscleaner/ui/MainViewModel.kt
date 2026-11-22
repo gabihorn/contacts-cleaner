@@ -14,12 +14,14 @@ import app.contactscleaner.CrashLog
 import app.contactscleaner.core.AnalysisReport
 import app.contactscleaner.core.Contact
 import app.contactscleaner.core.ContactAnalyzer
+import app.contactscleaner.core.DuplicateKind
 import app.contactscleaner.core.IdleFilter
 import app.contactscleaner.core.InactiveFilter
 import app.contactscleaner.core.Issue
 import app.contactscleaner.core.PhoneFormat
 import app.contactscleaner.core.PhoneNormalizer
 import app.contactscleaner.core.RegionGuess
+import app.contactscleaner.core.UnsavedCallers
 import app.contactscleaner.core.CsvExporter
 import app.contactscleaner.data.Action
 import app.contactscleaner.data.Archive
@@ -42,6 +44,9 @@ sealed interface Screen {
     data class Review(val category: Category) : Screen
     data object Log : Screen
     data object Archive : Screen
+
+    /** Duplicates of the tab on screen, one group at a time; [ids] is the order, fixed when it opened. */
+    data class SwipeReview(val ids: List<String>) : Screen
 }
 
 data class UiState(
@@ -64,6 +69,8 @@ data class UiState(
     val crash: String? = null,
     /** Issues the user said are fine as they are; never shown again until "show hidden". */
     val ignored: Set<String> = emptySet(),
+    /** The duplicates tab the user picked; null until they pick one. */
+    val duplicateKind: DuplicateKind? = null,
 ) {
     /** Without the call log every "last call" is unknown, so the idle part of the filter is ignored. */
     private val effectiveInactiveFilter
@@ -76,6 +83,36 @@ data class UiState(
 
     fun issuesIn(category: Category) = byCategory[category].orEmpty().filter {
         it.id !in ignored && (it !is Issue.Inactive || effectiveInactiveFilter.matches(it, scannedAt))
+    }
+
+    /** Duplicates of [kind] (the screen's tabs). */
+    fun duplicatesOf(kind: DuplicateKind) =
+        issuesIn(Category.DUPLICATES).filter { (it as Issue.Duplicates).kind == kind }
+
+    /** The duplicates tab on screen: the one picked, or else the first with anything in it. */
+    val shownDuplicateKind: DuplicateKind
+        get() = duplicateKind?.takeIf { duplicatesOf(it).isNotEmpty() }
+            ?: DuplicateKind.entries.firstOrNull { duplicatesOf(it).isNotEmpty() }
+            ?: DuplicateKind.PHONE
+
+    /**
+     * What the category's screen lists, and what its buttons act on: for
+     * duplicates, only the tab on screen, so "select all" and "merge" never
+     * touch groups out of sight.
+     */
+    fun shownIn(category: Category): List<Issue> =
+        if (category == Category.DUPLICATES) duplicatesOf(shownDuplicateKind) else issuesIn(category)
+
+    /**
+     * What "quick fix" would do in [category]: only what is safe without a
+     * second look. Hidden items are left alone, like everywhere else.
+     */
+    fun safeFixesIn(category: Category): List<Issue> = issuesIn(category).filter {
+        when (it) {
+            is Issue.Duplicates -> it.confident
+            is Issue.PhoneFormat, is Issue.RepeatedEntries, is Issue.PhoneLabel, is Issue.NameCleanup -> true
+            else -> false
+        }
     }
 
     /** Undo goes newest first, one run at a time. */
@@ -226,7 +263,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Hides what is ticked in [category]. */
     fun ignoreSelected(category: Category) =
-        ignore(_state.value.issuesIn(category).map { it.id }.filter { it in _state.value.selected })
+        ignore(_state.value.shownIn(category).map { it.id }.filter { it in _state.value.selected })
 
     fun dismissCrash() {
         CrashLog.clear(getApplication())
@@ -238,9 +275,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         prefs.edit().remove("ignored").apply()
     }
 
-    /** Ticks only the duplicates that are safe to merge without a second look. */
+    fun showDuplicates(kind: DuplicateKind) = _state.update { it.copy(duplicateKind = kind) }
+
+    /** Opens the one-at-a-time review over the duplicates tab on screen, as it is now. */
+    fun startSwipeReview() = _state.update { s ->
+        s.copy(screen = Screen.SwipeReview(s.shownIn(Category.DUPLICATES).map { it.id }))
+    }
+
+    /** "Same person": ticks the group for merging (the merge itself waits for the user's go). */
+    fun markSame(id: String) = _state.update { it.copy(selected = it.selected + id) }
+
+    /** Ticks only the duplicates on screen that are safe to merge without a second look. */
     fun selectConfidentDuplicates() = _state.update { s ->
-        val all = s.issuesIn(Category.DUPLICATES)
+        val all = s.shownIn(Category.DUPLICATES)
         s.copy(selected = s.selected - all.map { it.id }.toSet() + all.filter { (it as Issue.Duplicates).confident }.map { it.id })
     }
 
@@ -263,7 +310,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             // Picked now that the country is known (the property, not the one read before it was).
             val normalizer = this@MainViewModel.normalizer
             val contacts = repository.withActivity(loaded, normalizer, readCallLog)
-            ContactAnalyzer(normalizer).analyze(contacts, withActivity = true)
+            val report = ContactAnalyzer(normalizer).analyze(contacts, withActivity = true)
+            if (!readCallLog) report else {
+                val now = System.currentTimeMillis()
+                val calls = repository.calls(since = now - UnsavedCallers.DAYS * 24 * 60 * 60 * 1000)
+                report.copy(issues = report.issues + UnsavedCallers.find(calls, contacts, normalizer, now))
+            }
         }
         // Keep what the user ticked and typed for items still there; only items
         // new to this scan get the default selection.
@@ -305,7 +357,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setAll(category: Category, selected: Boolean) = _state.update { s ->
-        val ids = s.issuesIn(category).map { it.id }
+        val ids = s.shownIn(category).map { it.id }
         s.copy(selected = if (selected) s.selected + ids else s.selected - ids.toSet())
     }
 
@@ -326,13 +378,62 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun dismissMessage() = _state.update { it.copy(message = null) }
 
     fun apply(category: Category, action: Action) =
-        work(if (action == Action.FIX) "מתקן…" else "מוחק…") { applyNow(category, action) }
+        work(if (action == Action.FIX) "מתקן…" else "מוחק…") {
+            val s = _state.value
+            val result = applyItems(category, s.shownIn(category).filter { it.id in s.selected }, action)
+            if (result == null) _state.update { it.copy(message = "לא היה מה לתקן") }
+        }
 
-    private suspend fun applyNow(category: Category, action: Action) {
+    /** How many safe fixes quick fix would make, per category, for the confirmation. */
+    fun quickFixPreview(): List<Pair<Category, Int>> =
+        QUICK_FIX_ORDER.map { it to _state.value.safeFixesIn(it).size }.filter { it.second > 0 }
+
+    /**
+     * Every safe fix at once, one category after another. Each category is
+     * worked out again after the one before it, from a fresh scan, and goes
+     * to the change log as its own run, so each can be undone.
+     */
+    fun quickFix() = work("סידור מהיר…") {
+        val steps = quickFixPreview().map { it.first }
+        var done = 0
+        var total = 0
+        steps.forEachIndexed { index, category ->
+            val chosen = _state.value.safeFixesIn(category)
+            if (chosen.isEmpty()) return@forEachIndexed
+            val step = "סידור מהיר, שלב ${index + 1} מתוך ${steps.size}: ${category.title}"
+            _state.update { it.copy(busy = step) }
+            val result = applyItems(category, chosen, Action.FIX, titlePrefix = "סידור מהיר · ", busyLabel = step)
+                ?: return@forEachIndexed
+            done += result.first
+            total += result.second
+        }
+        _state.update {
+            it.copy(
+                message = when {
+                    total == 0 -> "לא היה מה לתקן"
+                    done == total && done == 1 -> "סידור מהיר: התיקון בוצע ואומת בסריקה חוזרת"
+                    done == total -> "סידור מהיר: $done תיקונים בוצעו ואומתו בסריקה חוזרת"
+                    else -> "סידור מהיר: אומתו $done מתוך $total. השאר עדיין מופיעים ברשימות"
+                }
+            )
+        }
+    }
+
+    /**
+     * Applies [action] to [chosen], in parts, then checks the result with a
+     * fresh scan. Returns how many were verified and how many were chosen,
+     * or null if nothing was written.
+     */
+    private suspend fun applyItems(
+        category: Category,
+        chosen: List<Issue>,
+        action: Action,
+        titlePrefix: String = "",
+        busyLabel: String = "מבצע…",
+    ): Pair<Int, Int>? {
         val s = _state.value
-        val chosen = s.issuesIn(category).filter { it.id in s.selected }
         val normalizer = normalizer
-        val baseTitle = when (action) {
+        val baseTitle = titlePrefix + when (action) {
             Action.FIX -> category.title
             Action.ARCHIVE_CONTACTS -> "${category.title}: ארכיון"
             else -> "${category.title}: מחיקה"
@@ -344,7 +445,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val parts = chosen.chunked(PART_SIZE)
         val runs = mutableListOf<ChangeRun>()
         parts.forEachIndexed { index, part ->
-            if (parts.size > 1) _state.update { it.copy(busy = "מבצע… חלק ${index + 1} מתוך ${parts.size}") }
+            if (parts.size > 1) _state.update { it.copy(busy = "$busyLabel · חלק ${index + 1} מתוך ${parts.size}") }
             val title = if (parts.size > 1) "$baseTitle (חלק ${index + 1}/${parts.size})" else baseTitle
             withContext(Dispatchers.IO) {
                 val run = ContactsWriter(resolver, normalizer).apply(title, part, s.inputs, action) ?: return@withContext
@@ -358,10 +459,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 runs += run.copy(before = emptyList())
             }
         }
-        if (runs.isEmpty()) {
-            _state.update { it.copy(message = "לא היה מה לתקן") }
-            return
-        }
+        if (runs.isEmpty()) return null
         lastOwnWrite = System.currentTimeMillis()
         rescan()
 
@@ -380,6 +478,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(message = verification) }
         reloadLog()
         reloadArchive()
+        return done to chosenIds.size
     }
 
     fun undo(run: ChangeRun) = work("מבטל…") {
@@ -429,6 +528,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             is Issue.PhoneFormat, is Issue.RepeatedEntries, is Issue.NameCleanup -> true
             is Issue.MissingName -> it.suggested != null
             is Issue.MissingAreaCode -> it.guess != null
+            // Saving a new contact needs a name the user chose.
+            is Issue.FrequentUnsaved -> false
             is Issue.PhoneLabel -> true
             is Issue.EmptyContact, is Issue.InvalidPhone, is Issue.OutdatedPhone, is Issue.Inactive,
             is Issue.SuspiciousName, is Issue.NameTag -> false
@@ -436,8 +537,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }.map { it.id }.toSet()
 
     private companion object {
-        /** Items per change-log run; see [applyNow]. */
+        /** Items per change-log run; see [applyItems]. */
         const val PART_SIZE = 200
+
+        /** The order quick fix goes in: merging early, so the fixes after it see the merged contacts. */
+        val QUICK_FIX_ORDER = listOf(
+            Category.REPEATED, Category.DUPLICATES, Category.PHONE_FORMAT, Category.PHONE_LABEL, Category.NAME_CLEANUP,
+        )
 
         /** How long after its own write the app ignores change notices. */
         const val OWN_WRITE_GRACE_MS = 5_000L

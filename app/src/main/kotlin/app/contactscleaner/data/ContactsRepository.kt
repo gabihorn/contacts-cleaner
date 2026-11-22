@@ -9,6 +9,7 @@ import android.provider.ContactsContract.CommonDataKinds.Phone
 import android.provider.ContactsContract.CommonDataKinds.StructuredName
 import android.provider.ContactsContract.Data
 import android.provider.ContactsContract.RawContacts
+import app.contactscleaner.core.CallEntry
 import app.contactscleaner.core.Contact
 import app.contactscleaner.core.DataRow
 import app.contactscleaner.core.EmailEntry
@@ -184,6 +185,42 @@ class ContactsRepository(private val resolver: ContentResolver) {
                 lastCall = contact.phones.mapNotNull { lastCallByKey[normalizer.key(it.number)] }.maxOrNull(),
             )
         }
+    }
+
+    /** The call log since [since], for [app.contactscleaner.core.UnsavedCallers]. Empty without permission. */
+    fun calls(since: Long): List<CallEntry> = runCatching {
+        val out = mutableListOf<CallEntry>()
+        resolver.query(
+            CallLog.Calls.CONTENT_URI,
+            arrayOf(CallLog.Calls.NUMBER, CallLog.Calls.DATE, CallLog.Calls.TYPE, CallLog.Calls.DURATION, CallLog.Calls.CACHED_NAME),
+            "${CallLog.Calls.DATE} >= ?",
+            arrayOf(since.toString()),
+            null,
+        )?.use { c ->
+            while (c.moveToNext()) {
+                val number = c.getString(0)?.takeIf { it.isNotBlank() } ?: continue
+                val type = c.getInt(2)
+                val talked = (type == CallLog.Calls.INCOMING_TYPE || type == CallLog.Calls.OUTGOING_TYPE) && c.getLong(3) > 0
+                out += CallEntry(number, c.getLong(1), talked, c.getString(4))
+            }
+        }
+        out
+    }.getOrDefault(emptyList())
+
+    /**
+     * The Google account most contacts are kept in, so a new contact syncs
+     * like the rest; null if there is none (the contact stays on the phone).
+     */
+    fun mainGoogleAccount(): String? {
+        val counts = HashMap<String, Int>()
+        resolver.query(
+            RawContacts.CONTENT_URI,
+            arrayOf(RawContacts.ACCOUNT_NAME),
+            "${RawContacts.ACCOUNT_TYPE} = ? AND ${RawContacts.DELETED} = 0",
+            arrayOf(MimeTypes.GOOGLE_ACCOUNT),
+            null,
+        )?.use { c -> while (c.moveToNext()) c.getString(0)?.let { counts[it] = (counts[it] ?: 0) + 1 } }
+        return counts.maxByOrNull { it.value }?.key
     }
 
     /**

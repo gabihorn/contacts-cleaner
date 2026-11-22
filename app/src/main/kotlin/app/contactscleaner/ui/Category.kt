@@ -19,6 +19,10 @@ enum class Category(
     PHONE_FORMAT("קידומת ופורמט", "מספרים שיעברו לפורמט בינלאומי אחיד. למשל \u2066050-1234567\u2069 יהיה \u2066+972501234567\u2069", deletesNumbers = true),
     MISSING_AREA_CODE("טלפון קווי בלי קידומת", "מספרים של 7 ספרות בלי קידומת אזור. בחר לכל מספר את הקידומת הנכונה, או מחק את המספרים.", deletesNumbers = true),
     PHONE_LABEL("סוג מספר", "נייד שמסומן \"בית\" או \"פקס\", או קווי שמסומן \"נייד\". התיקון משנה רק את התווית."),
+    UNSAVED(
+        "מדברים הרבה ולא שמורים",
+        "מספרים שדיברתם איתם לפחות ${app.contactscleaner.core.UnsavedCallers.MIN_CALLS} פעמים ב-3 החודשים האחרונים, ולא שמורים באנשי הקשר. הקלידו שם כדי לשמור.",
+    ),
     REPEATED("מספר שמור פעמיים", "אותו מספר או מייל מופיע כמה פעמים באותו איש קשר. העותקים המיותרים יימחקו."),
     MISSING_NAME("חסר שם", "אנשי קשר בלי שם, או שהשם הוא בעצם מספר. אפשר להקליד שם."),
     NAME_TAG(
@@ -67,6 +71,7 @@ enum class Category(
             is Issue.Inactive -> INACTIVE
             is Issue.OutdatedPhone -> OUTDATED
             is Issue.InvalidPhone -> INVALID
+            is Issue.FrequentUnsaved -> UNSAVED
         }
     }
 }

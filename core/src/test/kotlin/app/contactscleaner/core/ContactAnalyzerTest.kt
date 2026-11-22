@@ -162,4 +162,22 @@ class ContactAnalyzerTest {
         )
         assertEquals(1, analyzer.analyze(listOf(c)).ofType<Issue.RepeatedEntries>().single().repeatedPhones.size)
     }
+
+    @Test
+    fun `each duplicates group sits under its strongest kind`() {
+        val report = analyzer.analyze(
+            listOf(
+                contact("משה כהן", phones = listOf("0528123456")),
+                contact("משה כהן", phones = listOf("+972528123456")),
+                contact("רחל לוי", emails = listOf("rachel@example.com")),
+                contact("Rachel L", emails = listOf("Rachel@example.com")),
+                contact("אבי מזרחי", phones = listOf("0541111111")),
+                contact("אבי מזרחי", phones = listOf("0542222222")),
+            )
+        )
+        val kinds = report.ofType<Issue.Duplicates>().associate { it.contacts.first().displayName to it.kind }
+        assertEquals(DuplicateKind.PHONE, kinds["משה כהן"])
+        assertEquals(DuplicateKind.EMAIL, kinds["רחל לוי"])
+        assertEquals(DuplicateKind.NAME, kinds["אבי מזרחי"])
+    }
 }

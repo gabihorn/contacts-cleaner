@@ -1,5 +1,10 @@
 package app.contactscleaner.ui
 
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.BackHandler
@@ -60,6 +65,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.contactscleaner.core.Contact
+import app.contactscleaner.core.DuplicateKind
 import app.contactscleaner.core.DuplicateReason
 import app.contactscleaner.core.IdleFilter
 import app.contactscleaner.core.LineType
@@ -95,7 +101,9 @@ fun App(vm: MainViewModel) {
             vm.dismissMessage()
         }
     }
-    BackHandler(enabled = state.screen != Screen.Home) { vm.show(Screen.Home) }
+    BackHandler(enabled = state.screen != Screen.Home) {
+        vm.show(if (state.screen is Screen.SwipeReview) Screen.Review(Category.DUPLICATES) else Screen.Home)
+    }
 
     val context = LocalContext.current
     LaunchedEffect(Unit) {
@@ -115,12 +123,15 @@ fun App(vm: MainViewModel) {
                             is Screen.Review -> screen.category.title
                             Screen.Log -> "יומן שינויים"
                             Screen.Archive -> "ארכיון"
+                            is Screen.SwipeReview -> "בדיקה בהחלקה"
                         }
                     )
                 },
                 navigationIcon = {
                     if (state.screen != Screen.Home) {
-                        IconButton(onClick = { vm.show(Screen.Home) }) {
+                        IconButton(onClick = {
+                            vm.show(if (state.screen is Screen.SwipeReview) Screen.Review(Category.DUPLICATES) else Screen.Home)
+                        }) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "חזרה")
                         }
                     }
@@ -142,6 +153,7 @@ fun App(vm: MainViewModel) {
                 is Screen.Review -> CategoryScreen(screen.category, state, vm)
                 Screen.Log -> LogScreen(state, vm)
                 Screen.Archive -> ArchiveScreen(state, vm)
+                is Screen.SwipeReview -> SwipeReviewScreen(screen, state, vm)
             }
         }
     }
@@ -182,6 +194,7 @@ private fun contactsIn(issue: Issue): List<Contact> =
         is Issue.Inactive -> listOf(issue.contact)
         is Issue.OutdatedPhone -> listOf(issue.contact)
         is Issue.InvalidPhone -> listOf(issue.contact)
+        is Issue.FrequentUnsaved -> emptyList()
     }
 
 
@@ -268,6 +281,7 @@ private fun HomeScreen(state: UiState, vm: MainViewModel) {
                 TextButton(onClick = vm::scan, enabled = state.busy == null) { Text("רענון") }
             }
         }
+        item { QuickFixCard(state, vm) }
         items(categories) { category ->
             val issues = state.issuesIn(category)
             val chosen = issues.count { it.id in state.selected }
@@ -332,7 +346,7 @@ private fun HomeScreen(state: UiState, vm: MainViewModel) {
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun CategoryScreen(category: Category, state: UiState, vm: MainViewModel) {
-    val issues = state.issuesIn(category)
+    val issues = state.shownIn(category)
     val chosen = issues.count { it.id in state.selected }
     val selectable = category.fixable || category.deletesNumbers || category.deletesContacts
     var confirming by remember { mutableStateOf<Action?>(null) }
@@ -349,6 +363,7 @@ private fun CategoryScreen(category: Category, state: UiState, vm: MainViewModel
             item { Text(category.description, Modifier.padding(16.dp), style = MaterialTheme.typography.bodyMedium) }
             if (category == Category.INACTIVE) item { InactiveFilterPanel(state, vm) }
             if (category == Category.NAME_TAG) item { TagButtons(issues, vm) }
+            if (category == Category.DUPLICATES) item { DuplicateTabs(state, vm) }
             if (selectable) item {
                 FlowRow(Modifier.padding(horizontal = 8.dp)) {
                     TextButton(onClick = { vm.setAll(category, true) }) { Text("סמן הכל") }
@@ -359,14 +374,20 @@ private fun CategoryScreen(category: Category, state: UiState, vm: MainViewModel
                     if (chosen > 0) {
                         TextButton(onClick = { vm.ignoreSelected(category) }) { Text("הסתרת המסומנים ($chosen)") }
                     }
-                    TextButton(onClick = { exportList.launch(csvFileName()) }) { Text("ייצוא הרשימה") }
+                    if (category != Category.UNSAVED) {
+                        TextButton(onClick = { exportList.launch(csvFileName()) }) { Text("ייצוא הרשימה") }
+                    }
                 }
             }
             item { HorizontalDivider() }
             if (issues.isEmpty()) {
                 item {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("סיימת כאן ✓ אין יותר מה לסדר בקטגוריה הזו.", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            if (category == Category.DUPLICATES && state.issuesIn(category).isNotEmpty()) "אין כאן יותר כפולים. אפשר לעבור ללשונית אחרת למעלה."
+                            else "סיימת כאן ✓ אין יותר מה לסדר בקטגוריה הזו.",
+                            style = MaterialTheme.typography.titleMedium,
+                        )
                         Button(onClick = { vm.show(Screen.Home) }) { Text("חזרה למסך הראשי") }
                     }
                 }
@@ -389,7 +410,7 @@ private fun CategoryScreen(category: Category, state: UiState, vm: MainViewModel
                             onClick = { confirming = Action.FIX },
                             enabled = enabled,
                             modifier = Modifier.weight(1f),
-                        ) { Text("תיקון $chosen") }
+                        ) { Text(if (category == Category.UNSAVED) "שמירת $chosen" else "תיקון $chosen") }
                     }
                     if (category.deletesNumbers) {
                         OutlinedButton(
@@ -449,6 +470,174 @@ private fun CategoryScreen(category: Category, state: UiState, vm: MainViewModel
                 }) { Text("ביצוע") }
             },
             dismissButton = { TextButton(onClick = { confirming = null }) { Text("ביטול") } },
+        )
+    }
+}
+
+/** One tab per kind of duplicate, strongest first, each with how many groups it holds. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun DuplicateTabs(state: UiState, vm: MainViewModel) {
+    val shown = state.shownDuplicateKind
+    FlowRow(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        DuplicateKind.entries.forEach { kind ->
+            val n = state.duplicatesOf(kind).size
+            if (n == 0) return@forEach
+            FilterChip(
+                selected = kind == shown,
+                onClick = { vm.showDuplicates(kind) },
+                label = {
+                    Text(
+                        when (kind) {
+                            DuplicateKind.PHONE -> "אותו מספר"
+                            DuplicateKind.EMAIL -> "אותו מייל"
+                            DuplicateKind.NAME -> "אותו שם"
+                            DuplicateKind.SIMILAR -> "שם דומה"
+                        } + " ($n)"
+                    )
+                },
+            )
+        }
+    }
+    Text(
+        when (shown) {
+            DuplicateKind.PHONE -> "אנשי קשר עם מספר טלפון משותף. כמעט תמיד אותו אדם, חוץ ממספר של בית או משרד."
+            DuplicateKind.EMAIL -> "אנשי קשר עם אותו מייל. כמעט תמיד אותו אדם."
+            DuplicateKind.NAME -> "אותו שם בדיוק, בלי מספר או מייל משותף. כדאי להציץ לפני איחוד."
+            DuplicateKind.SIMILAR -> "שמות דומים, כמו \"יוסי\" ו\"יוסף\" או שם בעברית ובאנגלית. כדאי לבדוק כל קבוצה."
+        },
+        Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+        style = MaterialTheme.typography.bodySmall,
+    )
+    if (state.duplicatesOf(shown).size > 1) {
+        OutlinedButton(onClick = vm::startSwipeReview, modifier = Modifier.padding(horizontal = 16.dp)) {
+            Text("בדיקה בהחלקה, אחד אחד")
+        }
+    }
+}
+
+/**
+ * The duplicates of one tab, one group at a time. Swipe right (or the
+ * button) ticks it for merging, swipe left hides it as "not the same
+ * person"; nothing is written until the merge at the end.
+ */
+@Composable
+private fun SwipeReviewScreen(screen: Screen.SwipeReview, state: UiState, vm: MainViewModel) {
+    val byId = remember(state.report) { state.report?.issues.orEmpty().associateBy { it.id } }
+    var index by remember(screen) { mutableIntStateOf(0) }
+    var marked by remember(screen) { mutableIntStateOf(0) }
+    // Groups merged or hidden meanwhile drop out of the queue.
+    val queue = screen.ids.filter { it in byId && it !in state.ignored }
+    val current = queue.getOrNull(index)?.let { byId[it] as? Issue.Duplicates }
+
+    if (current == null) {
+        val chosen = state.shownIn(Category.DUPLICATES).count { it.id in state.selected }
+        Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("סיימת לעבור על הקבוצות", style = MaterialTheme.typography.titleLarge)
+            Text("סימנת $marked כאותו אדם בבדיקה הזו.", style = MaterialTheme.typography.bodyMedium)
+            if (chosen > 0) {
+                Button(onClick = {
+                    vm.show(Screen.Review(Category.DUPLICATES))
+                    vm.apply(Category.DUPLICATES, Action.FIX)
+                }, enabled = state.busy == null) { Text("איחוד $chosen המסומנים עכשיו") }
+            }
+            OutlinedButton(onClick = { vm.show(Screen.Review(Category.DUPLICATES)) }) { Text("חזרה לרשימה") }
+        }
+        return
+    }
+
+    var offset by remember(current.id) { mutableFloatStateOf(0f) }
+    val threshold = 220f
+    fun same() { vm.markSame(current.id); marked++; index++ }
+    fun notSame() { vm.ignore(listOf(current.id)) }  // drops out of the queue; index stays
+    fun skip() { index++ }
+
+    Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            "${index + 1} מתוך ${queue.size} · החלקה ימינה = אותו אדם, שמאלה = לא אותו אדם",
+            style = MaterialTheme.typography.labelMedium,
+        )
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            Card(
+                Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { translationX = offset; rotationZ = offset / 60f }
+                    .pointerInput(current.id) {
+                        detectHorizontalDragGestures(
+                            onDragEnd = {
+                                when {
+                                    offset > threshold -> same()
+                                    offset < -threshold -> notSame()
+                                }
+                                offset = 0f
+                            },
+                            onDragCancel = { offset = 0f },
+                        ) { change, amount ->
+                            change.consume()
+                            offset += amount
+                        }
+                    },
+                colors = CardDefaults.cardColors(
+                    containerColor = when {
+                        offset > threshold / 2 -> MaterialTheme.colorScheme.primaryContainer
+                        offset < -threshold / 2 -> MaterialTheme.colorScheme.errorContainer
+                        else -> MaterialTheme.colorScheme.surfaceVariant
+                    }
+                ),
+            ) {
+                LazyColumn(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    item { IssueBody(current, state, vm) }
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth().navigationBarsPadding(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = ::same, modifier = Modifier.weight(1f)) { Text("אותו אדם") }
+            OutlinedButton(onClick = ::skip, modifier = Modifier.weight(0.7f)) { Text("דלג") }
+            OutlinedButton(
+                onClick = ::notSame,
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+            ) { Text("לא אותו אדם") }
+        }
+    }
+}
+
+/** Every safe fix in one tap, with what it will do spelled out before anything is written. */
+@Composable
+private fun QuickFixCard(state: UiState, vm: MainViewModel) {
+    val preview = vm.quickFixPreview()
+    if (preview.isEmpty()) return
+    val total = preview.sumOf { it.second }
+    var confirming by remember { mutableStateOf(false) }
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("סידור מהיר", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "כל התיקונים הבטוחים בלחיצה אחת: " + preview.joinToString(", ") { (category, n) -> "${category.title} $n" },
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Button(onClick = { confirming = true }, enabled = state.busy == null) {
+                Text(if (total == 1) "תיקון אחד" else "$total תיקונים")
+            }
+        }
+    }
+    if (confirming) {
+        AlertDialog(
+            onDismissRequest = { confirming = false },
+            title = { Text(if (total == 1) "לבצע תיקון אחד?" else "לבצע $total תיקונים?") },
+            text = {
+                Text(
+                    preview.joinToString("\n") { (category, n) -> "• ${category.title}: $n" } +
+                        "\n\nרק מה שבטוח: כפולים ודאיים בלבד, בלי מחיקת אנשי קשר. כל שלב נשמר ביומן השינויים ואפשר לבטל אותו שם."
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    confirming = false
+                    vm.quickFix()
+                }) { Text("ביצוע") }
+            },
+            dismissButton = { TextButton(onClick = { confirming = false }) { Text("ביטול") } },
         )
     }
 }
@@ -696,6 +885,26 @@ private fun IssueBody(issue: Issue, state: UiState, vm: MainViewModel) {
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
+        }
+        is Issue.FrequentUnsaved -> {
+            val context = LocalContext.current
+            Title(ltr(issue.number))
+            Text(
+                "${issue.calls} שיחות ב-3 החודשים האחרונים · אחרונה ${java.time.Instant.ofEpochMilli(issue.lastCall).atZone(java.time.ZoneId.systemDefault()).toLocalDate().format(java.time.format.DateTimeFormatter.ofPattern("dd/MM"))}",
+                style = small,
+            )
+            OutlinedTextField(
+                value = state.inputs[issue.id] ?: issue.knownName.orEmpty(),
+                onValueChange = { vm.setInput(issue.id, it) },
+                label = { Text("שם לשמירה") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            TextButton(onClick = {
+                runCatching {
+                    context.startActivity(android.content.Intent(android.content.Intent.ACTION_DIAL, android.net.Uri.parse("tel:${issue.number}")))
+                }
+            }) { Text("חיוג") }
         }
         is Issue.EmptyContact -> Title(issue.contact.title)
         is Issue.Inactive -> {

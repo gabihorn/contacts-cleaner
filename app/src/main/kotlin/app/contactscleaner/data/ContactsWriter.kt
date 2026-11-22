@@ -54,6 +54,8 @@ class ContactsWriter(
 
         val ops = ArrayList<ContentProviderOperation>()
         val lines = mutableListOf<String>()
+        // New contacts go in one by one after the rest, so each one's id is known for undo.
+        val toCreate = mutableListOf<Pair<String, String>>() // name, number
 
         for (issue in issues) {
             val opsBefore = ops.size
@@ -132,6 +134,13 @@ class ContactsWriter(
                         line = "אוחדו: ${issue.contacts.joinToString(" + ") { it.title }}" + (name?.let { " ← \"$it\"" } ?: "")
                     }
                 }
+                is Issue.FrequentUnsaved -> {
+                    val name = (inputs[issue.id] ?: issue.knownName)?.trim().orEmpty()
+                    if (name.isNotEmpty()) {
+                        toCreate += name to issue.number
+                        lines += "נשמר איש קשר חדש: \"$name\" ${ltr(issue.number)}"
+                    }
+                }
                 // Nothing to fix; these can only be deleted (Action.DELETE_NUMBERS).
                 is Issue.OutdatedPhone, is Issue.InvalidPhone -> Unit
                 // Nothing to fix either; only Action.DELETE_CONTACTS applies.
@@ -139,11 +148,36 @@ class ContactsWriter(
             }
             if (ops.size > opsBefore && line != null) lines += line
         }
-        if (ops.isEmpty()) return null
+        if (ops.isEmpty() && toCreate.isEmpty()) return null
 
         applyInBatches(ops)
+        val account = if (toCreate.isEmpty()) null else repository.mainGoogleAccount()
+        val created = toCreate.mapNotNull { (name, number) -> create(name, number, account) }
         val now = System.currentTimeMillis()
-        return ChangeRun(id = now, time = now, title = title, lines = lines, before = before)
+        return ChangeRun(id = now, time = now, title = title, lines = lines, before = before, created = created)
+    }
+
+    /** Saves a new contact, in the Google account [account] if given; returns its raw contact id. */
+    private fun create(name: String, number: String, account: String?): Long? {
+        val ops = arrayListOf(
+            ContentProviderOperation.newInsert(RawContacts.CONTENT_URI)
+                .withValue(RawContacts.ACCOUNT_TYPE, account?.let { MimeTypes.GOOGLE_ACCOUNT })
+                .withValue(RawContacts.ACCOUNT_NAME, account)
+                .build(),
+            ContentProviderOperation.newInsert(Data.CONTENT_URI)
+                .withValueBackReference(Data.RAW_CONTACT_ID, 0)
+                .withValue(Data.MIMETYPE, StructuredName.CONTENT_ITEM_TYPE)
+                .withValue(StructuredName.DISPLAY_NAME, name)
+                .build(),
+            ContentProviderOperation.newInsert(Data.CONTENT_URI)
+                .withValueBackReference(Data.RAW_CONTACT_ID, 0)
+                .withValue(Data.MIMETYPE, Phone.CONTENT_ITEM_TYPE)
+                .withValue(Phone.NUMBER, number)
+                .withValue(Phone.TYPE, PhoneTypes.MOBILE)
+                .build(),
+        )
+        return runCatching { resolver.applyBatch(ContactsContract.AUTHORITY, ops) }
+            .getOrNull()?.firstOrNull()?.uri?.let(ContentUris::parseId)
     }
 
     /**
@@ -234,6 +268,7 @@ class ContactsWriter(
         is Issue.Inactive -> listOf(issue.contact)
         is Issue.OutdatedPhone -> listOf(issue.contact)
         is Issue.InvalidPhone -> listOf(issue.contact)
+        is Issue.FrequentUnsaved -> emptyList()
     }
 
     private fun Issue.contactOrNull(): Contact? = touchedContacts(this).singleOrNull()
